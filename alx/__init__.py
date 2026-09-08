@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Auralix Python Library: bench and HIL mechanisms shared by the device repos.
 
 Each equipment class has a facade module (``alx.debug_probe``) and one adapter per tool

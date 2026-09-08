@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """alx.hil - the pytest side of a bench suite (no hardware).
 
 Proofs (ALX-1544):

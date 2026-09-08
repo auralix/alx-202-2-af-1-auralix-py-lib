@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """The pytest side of a bench (HIL) suite: the parts every device repo needs and none should own.
 
 * traceability hook: the proof token in a test's name (``test_ALX<key>_P<n>_...``) is the primary

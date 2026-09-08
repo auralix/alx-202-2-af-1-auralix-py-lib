@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """alx.serial_logger - the long-term UART logger over a scripted port (no device, no real process).
 
 The fake port replays a script: bytes chunks, a float (silence for that long), or "LOST" (the port

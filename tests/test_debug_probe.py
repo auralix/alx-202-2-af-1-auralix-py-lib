@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """alx.debug_probe - the facade: contract names and the bench's choice of tool (no probe, no target).
 
 Proofs (ALX-1544):

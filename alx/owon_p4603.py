@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """OWON P4603 programmable PSU: bench instrument driver (SCPI over the USB serial port, pyserial).
 
 The supply next to the DUT's debug UART and the debug probe: it powers the DUT or feeds one of its

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Exception types of the Auralix Python Library.
 
 All derive from ``RuntimeError`` so callers that catch ``RuntimeError`` keep working.

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """SEGGER J-Link Commander as a debug-probe adapter (contract: ``alx.debug_probe``).
 
 One J-Link Commander process per operation, driven by a script written under ``run_dir`` so every

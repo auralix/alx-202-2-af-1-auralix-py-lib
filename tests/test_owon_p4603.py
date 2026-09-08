@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """alx.owon_p4603 - the OWON P4603 driver over a scripted serial port (no instrument).
 
 The fake answers the SCPI queries from its state, records every write, can drop answers (the unit's

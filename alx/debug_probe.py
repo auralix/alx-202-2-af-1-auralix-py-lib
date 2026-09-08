@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """The debug probe as one equipment class: same method names for every tool, tool chosen per bench.
 
 A debug probe (SEGGER J-Link, ST-LINK, ...) is one piece of hardware used in two roles: as a

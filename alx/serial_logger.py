@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Long-term UART logger for the soak mode: timestamped device lines, rotated daily.
 
 The HIL session lasts hours and ``alx.cli`` owns the CLI port while it runs. The soak mode watches a

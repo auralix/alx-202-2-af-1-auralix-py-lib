@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Live view into a running firmware: named variables read from RAM through the debug probe.
 
 Addresses are resolved from the ELF of the flashed build with ``arm-none-eabi-gdb`` (offline, no

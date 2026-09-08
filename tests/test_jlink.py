@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """alx.jlink - the J-Link Commander adapter over a scripted subprocess (no probe, no target).
 
 The fake stands in for subprocess.run: it reads the script the adapter wrote, records argv and timeout,

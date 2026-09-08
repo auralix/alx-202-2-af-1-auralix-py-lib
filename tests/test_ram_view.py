@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """alx.ram_view - the firmware RAM view over a scripted gdb and a fake probe (no toolchain, no target).
 
 Proofs (ALX-1544):

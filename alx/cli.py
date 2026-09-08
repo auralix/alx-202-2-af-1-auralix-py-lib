@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """The device under test through its serial CLI: framed reads, a wire log and command helpers.
 
 The Auralix C Library CLI takes one command line and answers with one JSON document. A response is

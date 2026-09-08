@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Style gate: the library is PEP 8 / PEP 257 / PEP 484 as configured in pyproject.toml, checked by ruff.
 
 Proofs (ALX-1544):

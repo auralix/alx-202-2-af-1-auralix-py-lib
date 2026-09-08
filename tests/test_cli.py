@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """alx.cli - the framed serial CLI client over a scripted wire (no device).
 
 The fake port delivers RX as a queue of chunks (one chunk per read call, so frames can be split at any
