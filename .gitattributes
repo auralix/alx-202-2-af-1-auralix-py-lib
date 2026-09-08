@@ -1,0 +1,9 @@
+* text=auto
+*.py text
+*.md text
+*.toml text
+*.ps1 text
+*.yml text
+*.bat text eol=crlf
+*.pdf binary
+*.png binary

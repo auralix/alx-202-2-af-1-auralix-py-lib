@@ -1,0 +1,27 @@
+# Auralix Python Library - bench / HIL mechanisms shared by the device repos:
+# instrument drivers (alxOwonP4603), the debug probe (alxJlink), the framed serial CLI client (alxCli),
+# the firmware RAM view (alxRamView) and the pytest evidence helpers (alxHil).
+# Device repos pin this repo as a git submodule and put its root on pytest's pythonpath
+# (or `pip install -e <submodule>`); no package index is involved.
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "alx-202-2-af-1-auralix-py-lib"
+version = "0.1.0"
+description = "Auralix Python Library - bench instrument drivers, debug probe, serial CLI client, firmware RAM view, pytest HIL helpers"
+requires-python = ">=3.10"
+dependencies = [
+    "pyserial>=3.5",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8",
+    "pytest-html>=4",
+    "pytest-timeout>=2",
+]
+
+[tool.setuptools]
+py-modules = ["alxCli", "alxHil", "alxJlink", "alxOwonP4603", "alxRamView"]
