@@ -1,0 +1,243 @@
+"""alx.serial_logger - the long-term UART logger over a scripted port (no device, no real process).
+
+The fake port replays a script: bytes chunks, a float (silence for that long), or "LOST" (the port
+disappears). The factory hands out fake ports in order, or refuses to open ("NOPORT").
+
+Proofs (ALX-1544):
+  P80 every device line is logged with a wall-clock timestamp, [INFO] level and the start / stop marks
+  P81 a line without terminator is flushed as "(partial)" after idle_flush_s
+  P82 silence produces a heartbeat line every heartbeat_s
+  P83 a lost port is logged as a gap and reopened; lines keep flowing, gaps are counted
+  P84 a port that cannot be opened at start is retried until it can
+  P85 stop() closes the port and writes the stop mark with the counters
+  P86 undecodable bytes are replaced, never dropped
+  P87 start_detached / status / stop_detached manage the PID file and the process
+  P88 main(): run drives SerialLogger.run, status exits non-zero when nothing runs
+  P89 the log file is named after the folder
+  P90 a detached logger that dies at start raises and leaves no PID file
+"""
+
+import re
+import time
+
+import pytest
+import serial
+
+import alx.serial_logger as sl
+from alx.serial_logger import SerialLogger
+
+STAMP = r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{3} \[(INFO|WARNING)\] "
+
+
+class FakePort:
+    def __init__(self, script):
+        self.script = list(script)
+        self.closed = False
+
+    def read_until(self, terminator=b"\n"):
+        if not self.script:
+            time.sleep(0.01)
+            return b""
+        item = self.script.pop(0)
+        if item == "LOST":
+            raise serial.SerialException("device gone")
+        if isinstance(item, (int, float)):
+            time.sleep(item)
+            return b""
+        return item
+
+    def close(self):
+        self.closed = True
+
+
+def make_factory(ports):
+    queue = list(ports)
+    opened = []
+
+    def factory(port, baud, timeout):
+        assert timeout == 1.0
+        item = queue.pop(0) if queue else FakePort([])
+        if item == "NOPORT":
+            raise serial.SerialException("could not open port")
+        opened.append(item)
+        return item
+
+    factory.opened = opened
+    return factory
+
+
+def run_logger(tmp_path, ports, run_s=0.3, **kw):
+    kw.setdefault("heartbeat_s", 60.0)
+    logger = SerialLogger(
+        "FAKE1", 115200, tmp_path / "soak", serial_factory=make_factory(ports), **kw
+    )
+    logger.start()
+    time.sleep(run_s)
+    logger.stop()
+    return logger, logger.log_path.read_text(encoding="utf-8")
+
+
+def test_ALX1544_P80_lines_are_timestamped_and_bracketed_by_marks(tmp_path):
+    logger, text = run_logger(tmp_path, [FakePort([b"boot\r\n", b"line two\r\n"])])
+    lines = text.splitlines()
+    assert all(re.match(STAMP, ln) for ln in lines), lines
+    assert "-- start: port FAKE1, 115200 baud" in lines[0]
+    assert "-- port FAKE1 open" in lines[1]
+    assert lines[2].endswith("] boot") and lines[3].endswith("] line two")
+    assert lines[-1].endswith("-- stop: 2 lines, 0 port gaps")
+    assert logger.lines == 2 and logger.gaps == 0
+
+
+def test_ALX1544_P81_partial_line_is_flushed_after_idle(tmp_path):
+    logger, text = run_logger(tmp_path, [FakePort([b"no newline"])], idle_flush_s=0.05)
+    assert "] (partial) no newline" in text
+
+
+def test_ALX1544_P82_silence_produces_heartbeats(tmp_path):
+    logger, text = run_logger(tmp_path, [FakePort([])], run_s=0.3, heartbeat_s=0.05)
+    beats = [ln for ln in text.splitlines() if "-- heartbeat: no data for" in ln]
+    assert len(beats) >= 2, text
+
+
+def test_ALX1544_P83_lost_port_is_logged_reopened_and_counted(tmp_path):
+    first, second = FakePort([b"a\r\n", "LOST"]), FakePort([b"b\r\n"])
+    logger, text = run_logger(tmp_path, [first, second], reconnect_s=0.02)
+    assert "-- port FAKE1 lost: device gone" in text
+    assert text.count("-- port FAKE1 open") == 2
+    assert "] a" in text and "] b" in text
+    assert first.closed and logger.gaps == 1 and logger.lines == 2
+
+
+def test_ALX1544_P84_unopenable_port_is_retried(tmp_path):
+    port = FakePort([b"x\r\n"])
+    logger, text = run_logger(tmp_path, ["NOPORT", "NOPORT", port], reconnect_s=0.02)
+    assert text.count("-- port FAKE1 not open") == 1, "the retry is announced once, not every 20 ms"
+    assert "-- port FAKE1 open" in text and "] x" in text
+
+
+def test_ALX1544_P85_stop_closes_the_port_and_writes_the_counters(tmp_path):
+    port = FakePort([b"one\r\n"])
+    logger, text = run_logger(tmp_path, [port])
+    assert port.closed
+    assert text.splitlines()[-1].endswith("-- stop: 1 lines, 0 port gaps")
+    assert logger._thread is None
+
+
+def test_ALX1544_P86_undecodable_bytes_are_replaced(tmp_path):
+    logger, text = run_logger(tmp_path, [FakePort([b"caf\xe9\r\n"])])
+    assert "] caf\ufffd" in text
+
+
+def test_ALX1544_P87_detached_lifecycle_pid_file_status_stop(tmp_path, monkeypatch):
+    log_dir = tmp_path / "soak"
+    popen_calls = []
+    killed = []
+    alive = {"value": True}
+
+    class FakeProc:
+        pid = 4242
+
+    def fake_popen(args, **kwargs):
+        popen_calls.append((args, kwargs))
+        return FakeProc()
+
+    monkeypatch.setattr(sl.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(sl, "_pid_alive", lambda pid: alive["value"] and pid == 4242)
+    monkeypatch.setattr(sl, "_pid_kill", lambda pid: killed.append(pid))
+    monkeypatch.setattr(sl.time, "sleep", lambda s: None)
+
+    pid = sl.start_detached("FAKE1", 115200, log_dir, heartbeat_s=30.0, retention_days=7)
+    assert pid == 4242 and (log_dir / "serial_logger.pid").read_text() == "4242"
+    args, kwargs = popen_calls[0]
+    assert args[1:4] == ["-m", "alx.serial_logger", "run"]
+    assert args[4:] == [
+        "--port",
+        "FAKE1",
+        "--baud",
+        "115200",
+        "--dir",
+        str(log_dir),
+        "--heartbeat-s",
+        "30.0",
+        "--retention-days",
+        "7",
+    ]
+    assert kwargs["stdin"] is sl.subprocess.DEVNULL and kwargs["stdout"] is sl.subprocess.DEVNULL
+
+    (log_dir / "soak.log").write_text(
+        "2026-01-01 00:00:00.000 [INFO] last line\n", encoding="utf-8"
+    )
+    info = sl.status(log_dir)
+    assert info == {
+        "pid": 4242,
+        "alive": True,
+        "log": str(log_dir / "soak.log"),
+        "last": "2026-01-01 00:00:00.000 [INFO] last line",
+    }
+
+    sl.start_detached("FAKE1", 115200, log_dir)
+    assert killed == [4242], "a second start stops the running logger first (one owner per port)"
+
+    assert sl.stop_detached(log_dir) is True and killed == [4242, 4242]
+    assert not (log_dir / "serial_logger.pid").exists()
+    assert sl.stop_detached(log_dir) is False
+
+
+def test_ALX1544_P88_main_run_and_status(tmp_path, monkeypatch, capsys):
+    ran = {}
+
+    def fake_run(self):
+        ran.update(
+            port=self.port,
+            baud=self.baud,
+            dir=self.log_dir,
+            hb=self.heartbeat_s,
+            keep=self.retention_days,
+        )
+
+    monkeypatch.setattr(SerialLogger, "run", fake_run)
+    assert (
+        sl.main(
+            [
+                "run",
+                "--port",
+                "FAKE1",
+                "--baud",
+                "9600",
+                "--dir",
+                str(tmp_path / "s"),
+                "--heartbeat-s",
+                "5",
+                "--retention-days",
+                "3",
+            ]
+        )
+        == 0
+    )
+    assert ran == {"port": "FAKE1", "baud": 9600, "dir": tmp_path / "s", "hb": 5.0, "keep": 3}
+    monkeypatch.setattr(sl, "_pid_alive", lambda pid: False)
+    assert sl.main(["status", "--dir", str(tmp_path / "s")]) == 1
+    assert "pid None alive False" in capsys.readouterr().out
+    assert sl.main(["stop", "--dir", str(tmp_path / "s")]) == 0
+    assert "no logger was running" in capsys.readouterr().out
+
+
+def test_ALX1544_P89_log_file_is_named_after_the_folder(tmp_path):
+    logger = SerialLogger(
+        "FAKE1", 115200, tmp_path / "week_37", serial_factory=make_factory([FakePort([])])
+    )
+    assert logger.log_path == tmp_path / "week_37" / "week_37.log"
+    assert logger.name == "week_37"
+
+
+def test_ALX1544_P90_detached_logger_dying_at_start_raises_and_cleans_up(tmp_path, monkeypatch):
+    class FakeProc:
+        pid = 99
+
+    monkeypatch.setattr(sl.subprocess, "Popen", lambda args, **kw: FakeProc())
+    monkeypatch.setattr(sl, "_pid_alive", lambda pid: False)
+    monkeypatch.setattr(sl, "_pid_kill", lambda pid: None)
+    monkeypatch.setattr(sl.time, "sleep", lambda s: None)
+    with pytest.raises(RuntimeError, match="died at start"):
+        sl.start_detached("FAKE1", 115200, tmp_path / "soak")
+    assert not (tmp_path / "soak" / "serial_logger.pid").exists()
