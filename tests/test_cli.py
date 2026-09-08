@@ -20,6 +20,8 @@ Proofs (ALX-1544):
   P32 a fresh session has no identity and no latencies
   P33 a frame split across four reads is still one document
   P34 close() closes the wire log
+  P35 the typed wrappers (help, reset, id, get, get_param, get_var, get_flag, get_const, get_trig) send the c-lib CLI lines
+  P36 set_param accepts str or bytes; get_params is the "data" shortcut of get_param
 """
 
 import json
@@ -68,9 +70,7 @@ def device(line: bytes):
     """A minimal c-lib-like device: get-param answers with data, set-param with success, else silence."""
     if line.startswith(b"get-param"):
         return b'{"status":"success","data":{"A_pct":7,"B_en":true}}\r\n'
-    if line.startswith(b"set-param"):
-        return OK
-    if line.startswith(b"get"):
+    if line.startswith((b"set-param", b"get", b"reset", b"id", b"help")):
         return OK
     return None
 
@@ -206,3 +206,41 @@ def test_ALX1544_P34_close_closes_the_wire_log(session):
     cli, wire = session()
     cli.close()
     assert cli._log.closed
+
+
+def test_ALX1544_P35_typed_wrappers_send_the_c_lib_cli_vocabulary(session):
+    cli, wire = session(responder=device)
+    calls = [
+        cli.help,
+        cli.reset,
+        cli.id,
+        cli.get,
+        cli.get_param,
+        cli.get_var,
+        cli.get_flag,
+        cli.get_const,
+        cli.get_trig,
+    ]
+    results = [call() for call in calls]
+    assert wire.tx == [
+        b"help\r",
+        b"reset\r",
+        b"id\r",
+        b"get\r",
+        b"get-param\r",
+        b"get-var\r",
+        b"get-flag\r",
+        b"get-const\r",
+        b"get-trig\r",
+    ]
+    assert results[4] == {"status": "success", "data": {"A_pct": 7, "B_en": True}}
+    assert all(r["status"] == "success" for r in results)
+
+
+def test_ALX1544_P36_set_param_accepts_str_or_bytes_and_get_params_is_the_data_shortcut(session):
+    cli, wire = session(responder=device)
+    assert cli.set_param("A_pct", "7") == {"status": "success"}
+    assert wire.tx[-1] == b"set-param --key A_pct --val 7\r"
+    assert cli.set_param(b"B_en", "true") == {"status": "success"}
+    assert wire.tx[-1] == b"set-param --key B_en --val true\r"
+    assert cli.get_params() == cli.get_param()["data"] == {"A_pct": 7, "B_en": True}

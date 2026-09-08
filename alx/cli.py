@@ -154,13 +154,58 @@ class Cli:
         self.send(line)
         return self.read_until_quiet(total_s=quiet_s + 0.5, quiet_s=quiet_s)
 
-    def set_param(self, key: bytes, val: bytes, term: bytes = b"\r") -> dict:
+    # -- the c-lib CLI vocabulary ---------------------------------------------------------
+    @staticmethod
+    def _ascii(text: str | bytes) -> bytes:
+        return text.encode("ascii") if isinstance(text, str) else text
+
+    def _cmd(self, name: str, term: bytes = b"\r") -> dict:
+        return self.command_json(name.encode("ascii") + term)
+
+    def help(self) -> dict:
+        """Send ``help`` and return the parsed response (the command list, always pretty)."""
+        return self._cmd("help")
+
+    def reset(self) -> dict:
+        """Send ``reset`` and return its response; the device then reboots (banner follows)."""
+        return self._cmd("reset")
+
+    def id(self) -> dict:
+        """Send ``id`` and return the parsed response."""
+        return self._cmd("id")
+
+    def get(self) -> dict:
+        """Send ``get`` (every item) and return the parsed response."""
+        return self._cmd("get")
+
+    def get_param(self) -> dict:
+        """Send ``get-param`` and return the parsed response (``status`` + ``data``)."""
+        return self._cmd("get-param")
+
+    def get_var(self) -> dict:
+        """Send ``get-var`` and return the parsed response."""
+        return self._cmd("get-var")
+
+    def get_flag(self) -> dict:
+        """Send ``get-flag`` and return the parsed response."""
+        return self._cmd("get-flag")
+
+    def get_const(self) -> dict:
+        """Send ``get-const`` and return the parsed response."""
+        return self._cmd("get-const")
+
+    def get_trig(self) -> dict:
+        """Send ``get-trig`` and return the parsed response."""
+        return self._cmd("get-trig")
+
+    def set_param(self, key: str | bytes, val: str | bytes, term: bytes = b"\r") -> dict:
         """Send ``set-param --key <key> --val <val>`` and return the parsed response."""
-        return self.command_json(b"set-param --key " + key + b" --val " + val + term)
+        line = b"set-param --key " + self._ascii(key) + b" --val " + self._ascii(val) + term
+        return self.command_json(line)
 
     def get_params(self) -> dict:
-        """Send ``get-param`` and return its ``data`` object."""
-        return self.command_json(b"get-param\r")["data"]
+        """Send ``get-param`` and return only its ``data`` object (the shortcut tests use most)."""
+        return self.get_param()["data"]
 
     def sync(self) -> None:
         """Sync both ends: a bare terminator flushes the device line buffer, then RX is drained."""
