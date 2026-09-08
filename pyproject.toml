@@ -1,8 +1,7 @@
-# Auralix Python Library - bench / HIL mechanisms shared by the device repos:
-# instrument drivers (alxOwonP4603), the debug probe (alxJlink), the framed serial CLI client (alxCli),
-# the firmware RAM view (alxRamView) and the pytest evidence helpers (alxHil).
-# Device repos pin this repo as a git submodule and put its root on pytest's pythonpath
-# (or `pip install -e <submodule>`); no package index is involved.
+# Auralix Python Library - bench and HIL mechanisms shared by the device repos (package `alx`).
+# Device repos pin this repo as a git submodule and put its root on pytest's pythonpath, or install it:
+#   pip install -e <path-to-this-repo>
+# Offline tests (no instrument, no target):  python -m pytest
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
@@ -10,7 +9,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "alx-202-2-af-1-auralix-py-lib"
 version = "0.1.0"
-description = "Auralix Python Library - bench instrument drivers, debug probe, serial CLI client, firmware RAM view, pytest HIL helpers"
+description = "Auralix Python Library - debug probe, bench instruments, serial CLI client, firmware RAM view, soak logger, pytest HIL helpers"
 requires-python = ">=3.10"
 dependencies = [
     "pyserial>=3.5",
@@ -21,7 +20,42 @@ test = [
     "pytest>=8",
     "pytest-html>=4",
     "pytest-timeout>=2",
+    "ruff>=0.5",
 ]
 
 [tool.setuptools]
-py-modules = ["alxCli", "alxHil", "alxJlink", "alxOwonP4603", "alxRamView"]
+packages = ["alx"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+pythonpath = ["."]
+timeout = 60
+xfail_strict = true
+addopts = "-ra --strict-markers --strict-config --junitxml=build/pytest_report.xml --html=build/pytest_report.html --self-contained-html"
+markers = [
+    "req(id): additional proof/requirement id attached by a LATER task (name keeps the originating token)",
+]
+junit_family = "xunit1"
+filterwarnings = [
+    "error",
+]
+
+# Style = PEP 8 / PEP 257 / PEP 484, enforced by ruff (tests/test_ruff.py runs `ruff check` and `ruff format --check`).
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = ["build"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "N", "UP", "B", "D"]
+ignore = ["D107"]                       # __init__ documented in the class docstring
+
+[tool.ruff.lint.pydocstyle]
+convention = "pep257"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["D", "N802", "E501"]       # proof-token test names (test_ALX1544_P1_...), no docstring duty, long asserts
+
+[tool.ruff.format]
+quote-style = "double"

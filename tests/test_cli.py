@@ -1,4 +1,4 @@
-"""alxCli - the framed serial CLI client over a scripted wire (no device).
+"""alx.cli - the framed serial CLI client over a scripted wire (no device).
 
 The fake port delivers RX as a queue of chunks (one chunk per read call, so frames can be split at any
 byte) and can answer a written line through a responder, like a device would.
@@ -27,7 +27,7 @@ import time
 
 import pytest
 
-from alxCli import Cli
+from alx.cli import Cli
 
 OK = b'{"status":"success"}\r\n'
 
@@ -77,6 +77,7 @@ def device(line: bytes):
 @pytest.fixture
 def session(tmp_path):
     """make(chunks=(), responder=None) -> (Cli, FakeWire); log() -> the wire log text.
+
     Every Cli is closed at teardown (the session owner's duty, here the fixture's)."""
     opened = []
 
@@ -85,6 +86,7 @@ def session(tmp_path):
         cli = Cli(wire, tmp_path / "uart.log")
         opened.append(cli)
         return cli, wire
+
     make.log = lambda: (tmp_path / "uart.log").read_text(encoding="utf-8")
     yield make
     for cli in opened:
@@ -195,7 +197,7 @@ def test_ALX1544_P32_fresh_session_has_no_identity_and_no_latencies(session):
 
 
 def test_ALX1544_P33_frame_split_across_reads_is_one_document(session):
-    cli, wire = session(chunks=[b'{"sta', b'tus":"suc', b'cess"}\r', b'\n'])
+    cli, wire = session(chunks=[b'{"sta', b'tus":"suc', b'cess"}\r', b"\n"])
     assert cli.read_json(total_s=0.5) == OK
 
 
