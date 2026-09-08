@@ -13,7 +13,14 @@
   - git_head(): short HEAD of a repo (fw repo, submodules) for the run's identity record
   - run_dir(): the per-run evidence directory (ALX_HIL_RUN_DIR from the launcher, else a timestamp)
 
-Load from the device's Test/conftest.py:  pytest_plugins = ("alxHil",)
+Load from the device's Test/conftest.py, one of two ways:
+
+    pytest_plugins = ("alxHil",)                    # when that conftest does NOT import alxHil itself
+
+    import alxHil                                   # when it does (for parse_banner, run_dir, ...):
+    def pytest_configure(config):                   # register the imported module - loading it by name
+        config.pluginmanager.register(alxHil, "alxHil")   # afterwards would raise the assert-rewrite warning
+
 Nothing here touches hardware; the fixtures (which instrument on which port, under which policy) stay
 in the device repo.
 """
