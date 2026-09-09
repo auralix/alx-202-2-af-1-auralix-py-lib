@@ -5,4 +5,4 @@
 - Current Version - [master](https://github.com/auralix/alx-202-2-af-1-auralix-py-lib/tree/master)
 
 ## Links
-- [Auralix Python Library Test Specifications](Test/README.md)
+- [Auralix Python Library Test Specifications](tests/README.md)
