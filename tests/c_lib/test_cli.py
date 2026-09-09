@@ -26,6 +26,7 @@ Proofs (ALX-1544):
   P38 property: any JSON document, preceded by any brace-free trace and split at any byte boundaries,
       is framed exactly once and the trace is kept aside (Hypothesis)
   P39 read_until_quiet returns at total_s when the wire never goes quiet
+  P120 mutation-driven hardening: latencies are milliseconds; read_until_quiet logs what it read as RX
 """
 
 import itertools
@@ -350,3 +351,16 @@ def test_ALX1544_P39_read_until_quiet_returns_at_the_deadline_when_the_wire_neve
         assert set(out) == {ord("x")}
     finally:
         cli.close()
+
+
+def test_ALX1544_P120_latency_is_milliseconds_and_read_until_quiet_logs_rx(session):
+    def slow_device(line: bytes):
+        time.sleep(0.02)
+        return OK
+
+    cli, wire = session(responder=slow_device)
+    assert cli.command(b"get\r", total_s=0.5) == OK
+    assert 10.0 <= cli.latencies_ms[0] <= 500.0, "milliseconds, not seconds and not a constant"
+    wire.chunks.append(b"boot banner\r\n")
+    assert cli.read_until_quiet(total_s=1.0, quiet_s=0.05) == b"boot banner\r\n"
+    assert "RX b'boot banner" in session.log()

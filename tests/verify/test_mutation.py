@@ -2,7 +2,7 @@
 """alx.verify.mutation - the mutation driver over a scratch project and a scripted test runner.
 
 Proofs (ALX-1544):
-  P106 bytecode(): a syntax error gives None, a comment/whitespace change the same bytecode, a real change differs
+  P106 fingerprint(): a syntax error gives None, a comment/whitespace change the same fingerprint, a real change differs
   P107 default_tests_for(): pkg/mod -> tests/pkg/test_mod.py, __init__ -> test_<pkg>.py, top-level module,
        fallback to the tests folder
   P108 run_source(): STILLBORN and EQUIVALENT are dropped before any run; rc 0 -> SURVIVED with a diff,
@@ -14,7 +14,9 @@ Proofs (ALX-1544):
   P112 main() runs every source, prints the per-source counts and the report; a runner failure exits 1
   P114 a run killed while a mutant was planted is repaired by the next start() from the backup copy, and
        start() clears the previous run's mutants, survivors and reports
-  P115 a docstring-only mutant is EQUIVALENT (bytecode compared with docstrings stripped)
+  P115 a docstring-only mutant is EQUIVALENT (fingerprint ignores docstrings)
+  P131 mutation-driven hardening: an inserted line, a changed annotation and a moved position are EQUIVALENT;
+       main() passes --sample/--seed on and defaults sample to 0
 """
 
 import json
@@ -81,20 +83,49 @@ class ScriptedRunner:
         return subprocess.CompletedProcess(cmd, rc, stdout="", stderr="")
 
 
-def test_ALX1544_P106_bytecode_equivalence_and_stillborn():
-    assert mutation.bytecode("def f(:\n", "m.py") is None
-    same = mutation.bytecode("x = 1\n", "m.py")
-    assert same == mutation.bytecode("x = 1  # comment\n", "m.py")
-    assert same != mutation.bytecode("x = 2\n", "m.py")
+def test_ALX1544_P106_fingerprint_equivalence_and_stillborn():
+    assert mutation.fingerprint("def f(:\n", "m.py") is None
+    same = mutation.fingerprint("x = 1\n", "m.py")
+    assert same == mutation.fingerprint("x = 1  # comment\n", "m.py")
+    assert same != mutation.fingerprint("x = 2\n", "m.py")
 
 
 def test_ALX1544_P115_docstring_only_mutant_is_equivalent():
     original = '"""Module doc."""\n\n\ndef f(a):\n    """Return a."""\n    return a\n'
     doc_mutant = original.replace("Module doc.", "Module True.").replace("Return a.", "Return.")
-    assert mutation.bytecode(original, "m.py") == mutation.bytecode(doc_mutant, "m.py")
-    assert mutation.bytecode(original, "m.py") != mutation.bytecode(
+    assert mutation.fingerprint(original, "m.py") == mutation.fingerprint(doc_mutant, "m.py")
+    assert mutation.fingerprint(original, "m.py") != mutation.fingerprint(
         original.replace("return a", "return None"), "m.py"
     )
+
+
+def test_ALX1544_P131_inserted_lines_annotations_and_positions_are_equivalent():
+    original = (
+        '"""Doc.\n\nmore doc\n"""\n\nfrom __future__ import annotations\n\n'
+        "X: int = 1\nY: list[str]\n\n\nclass C:\n"
+        '    """Class doc."""\n\n    n: int = 2\n\n'
+        "    def f(self, a: int, *v: str, k: bool = False, **kw: int) -> dict[str, int]:\n"
+        '        """Doc."""\n        return {"a": a}\n\n'
+        "    async def g(self, a: int) -> None:\n"
+        '        """Doc."""\n        return None\n'
+    )
+    base = mutation.fingerprint(original, "m.py")
+    assert base is not None
+    assert base == mutation.fingerprint(
+        original.replace("\nmore doc\n", "\nbreak;\nmore doc\n"), "m.py"
+    ), "a line inserted inside a docstring shifts every position: still equivalent"
+    assert base == mutation.fingerprint(
+        original.replace("-> dict[str, int]", "-> dict[int]"), "m.py"
+    )
+    assert base == mutation.fingerprint(original.replace("a: int,", "a: float,"), "m.py")
+    assert base == mutation.fingerprint(original.replace("g(self, a: int)", "g(self, a)"), "m.py")
+    assert base == mutation.fingerprint(original.replace("X: int = 1", "X = 1"), "m.py")
+    assert base == mutation.fingerprint(original.replace("Y: list[str]\n", ""), "m.py"), (
+        "a bare declaration runs nothing"
+    )
+    assert base != mutation.fingerprint(original.replace("X: int = 1", "X: int = 2"), "m.py")
+    assert base != mutation.fingerprint(original.replace("return {", "return dict({"), "m.py")
+    assert base != mutation.fingerprint(original.replace("return None", "return 1"), "m.py")
 
 
 def test_ALX1544_P107_default_tests_for_mirrors_the_package_layout(tmp_path):
@@ -150,6 +181,13 @@ def test_ALX1544_P114_start_recovers_a_planted_source_and_clears_the_previous_ru
     assert run.start() == []
     assert not (out / "backup").exists()
 
+    # a planted mutant SHORTER than the original is recovered too (not a byte-order comparison)
+    (out / "backup" / "pkg").mkdir(parents=True)
+    (out / "backup" / "pkg" / "mod.py").write_text(SRC, encoding="utf-8")
+    src.write_text("x = 1\n", encoding="utf-8")
+    assert run.start() == ["pkg/mod.py"]
+    assert src.read_text(encoding="utf-8") == SRC
+
     results = run.run_source(src)  # a normal run leaves no backup behind
     assert len(results) == 3
     assert not (out / "backup").exists()
@@ -176,14 +214,17 @@ def test_ALX1544_P108_run_source_classifies_restores_and_reports(tmp_path):
     assert len(runner.calls) == 5, "baseline + 3 viable mutants + restoration proof"
     assert runner.calls[0][-1].endswith("test_mod.py"), "the mirror test file, not the whole folder"
 
-    diff = (tmp_path / "out" / "survivors" / "mod.mutant.1.diff").read_text(encoding="utf-8")
+    assert results[1].diff == "pkg.mod.mutant.1.diff", "diff names carry the module path"
+    diff = (tmp_path / "out" / "survivors" / "pkg.mod.mutant.1.diff").read_text(encoding="utf-8")
     assert "-    return a - b" in diff
     assert "+    return a + b" in diff
+    assert (tmp_path / "out" / "mutants" / "pkg.mod").is_dir(), "mutants keyed by module path"
 
     text = run.report()
+    assert text.endswith("\n")
     assert "killed 2  survived 1  stillborn 1  equivalent 1" in text
     assert "kill rate: 66.7%" in text
-    assert "SURVIVED  pkg/mod.py  mod.mutant.1.py  -> survivors/mod.mutant.1.diff" in text
+    assert "SURVIVED  pkg/mod.py  mod.mutant.1.py  -> survivors/pkg.mod.mutant.1.diff" in text
     results_json = json.loads((tmp_path / "out" / "results.json").read_text(encoding="utf-8"))
     assert {r["status"] for r in results_json} == {"KILLED", "SURVIVED", "STILLBORN", "EQUIVALENT"}
 
@@ -267,9 +308,12 @@ def test_ALX1544_P111_universalmutator_generates_sorted_mutants_and_reports_a_mi
 
 
 def test_ALX1544_P112_main_runs_every_source_and_reports_or_fails(tmp_path, monkeypatch, capsys):
+    made: list[tuple[object, ...]] = []
+
     class FakeRun:
         def __init__(self, root, out, sample=0, seed=1):
             self.args = (root, out, sample, seed)
+            made.append(self.args)
 
         def run_source(self, source):
             if source.name == "bad.py":
@@ -294,3 +338,6 @@ def test_ALX1544_P112_main_runs_every_source_and_reports_or_fails(tmp_path, monk
     assert out.endswith("REPORT\n")
     assert mutation.main(["--root", str(tmp_path), "alx/bad.py"]) == 1
     assert "MUTATION RUN FAILED: baseline is red for bad.py" in capsys.readouterr().out
+    assert [m[2:] for m in made] == [(5, 1), (0, 1)], (
+        "--sample and --seed reach the run; defaults 0 / 1"
+    )

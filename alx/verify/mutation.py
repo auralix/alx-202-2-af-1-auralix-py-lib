@@ -5,8 +5,9 @@ The same procedure as the C library's mutation run, with the same generator (uni
 without a compile step: for every mutant of a source file
 
 * ``STILLBORN``: the mutant does not even compile; dropped before any test
-* ``EQUIVALENT``: the mutant compiles to the very same bytecode as the original once docstrings are
-  stripped (a whitespace, comment or docstring change); dropped, nothing that runs has changed
+* ``EQUIVALENT``: the mutant has the same normalized AST as the original - docstrings, type
+  annotations and source positions ignored (a whitespace, comment, docstring or annotation change);
+  dropped, nothing that runs has changed
 * ``KILLED``: the tests went red or hung (timeout) - the tests noticed the planted bug
 * ``SURVIVED``: the tests stayed green - a hole in the tests, or a behaviourally equivalent mutant;
   judge by the diff written to ``<out>/survivors/``
@@ -29,9 +30,9 @@ next start, never left in the tree.
 from __future__ import annotations
 
 import argparse
+import ast
 import difflib
 import json
-import marshal
 import os
 import random
 import shutil
@@ -55,6 +56,7 @@ class Outcome:
     status: str  # KILLED | SURVIVED | STILLBORN | EQUIVALENT
     seconds: float
     detail: str = ""
+    diff: str = ""  # survivors: the diff file under <out>/survivors/
 
 
 class MutationError(RuntimeError):
@@ -82,16 +84,70 @@ def universalmutator(source: Path, mutant_dir: Path) -> list[Path]:
     return sorted(mutants, key=lambda p: int(p.suffixes[-2][1:]))
 
 
-def bytecode(text: str, filename: str) -> bytes | None:
-    """Marshalled bytecode of ``text`` with docstrings stripped; None when it does not compile.
+class _Normalize(ast.NodeTransformer):
+    """Drop what never runs: docstrings, type annotations (the positions go with ``ast.dump``)."""
 
-    ``optimize=2`` drops docstrings (and asserts, which the library does not use), so a mutant that
-    only edits a docstring compares equal to the original: EQUIVALENT, never a survivor.
+    @staticmethod
+    def _strip_doc(
+        node: ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> None:
+        body = node.body
+        first = body[0] if body else None
+        if (
+            isinstance(first, ast.Expr)
+            and isinstance(first.value, ast.Constant)
+            and isinstance(first.value.value, str)
+        ):
+            body = body[1:]
+        node.body = body or [ast.Pass()]
+
+    def visit_Module(self, node: ast.Module) -> ast.AST:
+        self.generic_visit(node)
+        self._strip_doc(node)
+        return node
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> ast.AST:
+        self.generic_visit(node)
+        self._strip_doc(node)
+        return node
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.AST:
+        self.generic_visit(node)
+        node.returns = None
+        args = node.args
+        for arg in [*args.posonlyargs, *args.args, *args.kwonlyargs, args.vararg, args.kwarg]:
+            if arg is not None:
+                arg.annotation = None
+        self._strip_doc(node)
+        return node
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> ast.AST:
+        self.generic_visit(node)
+        node.returns = None
+        args = node.args
+        for arg in [*args.posonlyargs, *args.args, *args.kwonlyargs, args.vararg, args.kwarg]:
+            if arg is not None:
+                arg.annotation = None
+        self._strip_doc(node)
+        return node
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> ast.AST | None:
+        if node.value is None:
+            return None  # a bare declaration runs nothing: dropped
+        return ast.Assign(targets=[node.target], value=node.value)
+
+
+def fingerprint(text: str, filename: str) -> str | None:
+    """Return the normalized AST of ``text`` as text; None when it does not parse.
+
+    Docstrings, type annotations and source positions are dropped, so a mutant that only edits a
+    docstring or an annotation, or that inserts a line inside one, is EQUIVALENT, never a survivor.
     """
     try:
-        return marshal.dumps(compile(text, filename, "exec", optimize=2))
+        tree = ast.parse(text, filename)
     except (SyntaxError, ValueError):
         return None
+    return ast.dump(_Normalize().visit(tree))
 
 
 def default_tests_for(root: Path, source: Path) -> Path:
@@ -170,11 +226,11 @@ class MutationRun:
         return seconds
 
     def viable(self, source: Path, mutants: list[Path]) -> list[Path]:
-        """Drop STILLBORN (no compile) and EQUIVALENT (same bytecode) mutants, recording them."""
-        original = bytecode(source.read_text(encoding="utf-8"), str(source))
+        """Drop STILLBORN (no parse) and EQUIVALENT (same normalized AST) mutants; record them."""
+        original = fingerprint(source.read_text(encoding="utf-8"), str(source))
         keep = []
         for mutant in mutants:
-            code = bytecode(mutant.read_text(encoding="utf-8", errors="replace"), str(source))
+            code = fingerprint(mutant.read_text(encoding="utf-8", errors="replace"), str(source))
             if code is None:
                 self.outcomes.append(Outcome(str(source), mutant.name, "STILLBORN", 0.0))
             elif code == original:
@@ -210,11 +266,12 @@ class MutationRun:
         """Baseline, generate, filter, sample, plant and test each mutant, restore, verify."""
         source = source.resolve()
         rel = source.relative_to(self.root).as_posix()
+        key = rel.removesuffix(".py").replace("/", ".")  # alx/c_lib/cli.py -> alx.c_lib.cli
         self.recover()
         clear_pycache(self.root / rel.split("/")[0])
         base_s = self.baseline(source)
         timeout_s = max(self.min_timeout_s, self.timeout_factor * base_s)
-        mutants = self.viable(source, self._generate(source, self.out / "mutants" / source.stem))
+        mutants = self.viable(source, self._generate(source, self.out / "mutants" / key))
         if self.sample and len(mutants) > self.sample:
             picked = random.Random(self.seed).sample(mutants, self.sample)  # noqa: S311
             mutants = sorted(picked)
@@ -227,14 +284,15 @@ class MutationRun:
             for mutant in mutants:
                 source.write_bytes(mutant.read_bytes())
                 rc, seconds = self._pytest(source, timeout_s)
+                diff = ""
                 if rc == 0:
                     status, detail = "SURVIVED", ""
-                    self._write_diff(original, mutant, source)
+                    diff = self._write_diff(original, mutant, source, key)
                 elif rc == -1:
                     status, detail = "KILLED", "timeout"
                 else:
                     status, detail = "KILLED", f"rc={rc}"
-                results.append(Outcome(rel, mutant.name, status, round(seconds, 2), detail))
+                results.append(Outcome(rel, mutant.name, status, round(seconds, 2), detail, diff))
         finally:
             source.write_bytes(original)
             clear_pycache(self.root / rel.split("/")[0])
@@ -247,7 +305,8 @@ class MutationRun:
         self.outcomes.extend(results)
         return results
 
-    def _write_diff(self, original: bytes, mutant: Path, source: Path) -> None:
+    def _write_diff(self, original: bytes, mutant: Path, source: Path, key: str) -> str:
+        """Write the survivor's diff as ``<key>.mutant.<n>.diff``; return that file name."""
         survivors = self.out / "survivors"
         survivors.mkdir(parents=True, exist_ok=True)
         diff = difflib.unified_diff(
@@ -257,7 +316,9 @@ class MutationRun:
             tofile=mutant.name,
             lineterm="",
         )
-        (survivors / f"{mutant.stem}.diff").write_text("\n".join(diff) + "\n", encoding="utf-8")
+        name = f"{key}{mutant.stem.removeprefix(source.stem)}.diff"
+        (survivors / name).write_text("\n".join(diff) + "\n", encoding="utf-8")
+        return name
 
     # -- report ---------------------------------------------------------------------------
     def counts(self) -> dict[str, int]:
@@ -285,7 +346,7 @@ class MutationRun:
             "",
         ]
         lines.extend(
-            f"SURVIVED  {o.source}  {o.mutant}  -> survivors/{Path(o.mutant).stem}.diff"
+            f"SURVIVED  {o.source}  {o.mutant}  -> survivors/{o.diff}"
             for o in self.outcomes
             if o.status == "SURVIVED"
         )

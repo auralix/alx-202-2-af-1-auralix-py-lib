@@ -50,3 +50,36 @@ def test_ALX1544_P102_main_pass_and_fail_with_report_file(tmp_path, capsys):
     assert report[0] == "ASCII GATE: FAIL (3 files)"
     assert len(report) == 2, "first offender per file only"
     assert report[1].endswith("notes.md:2: byte 0xE2")
+
+
+def test_ALX1544_P129_gate_scope_covers_the_repository_text_kinds():
+    """Mutation-driven hardening: the scope sets name every kind the pipeline writes."""
+    assert {
+        ".py",
+        ".toml",
+        ".md",
+        ".txt",
+        ".json",
+        ".yml",
+        ".yaml",
+        ".ps1",
+        ".c",
+        ".h",
+        ".xml",
+        ".csv",
+    } <= (ascii_gate.TEXT_SUFFIXES)
+    assert {"LICENSE", ".gitignore", ".gitattributes", ".editorconfig", ".python-version"} <= (
+        ascii_gate.TEXT_NAMES
+    )
+    assert {
+        ".git",
+        ".venv",
+        ".nox",
+        "build",
+        "dist",
+        "__pycache__",
+        ".mypy_cache",
+        ".ruff_cache",
+    } <= (ascii_gate.SKIP_DIRS)
+    assert {".hypothesis", ".pytest_cache"} <= ascii_gate.SKIP_DIRS
+    assert "" not in ascii_gate.TEXT_SUFFIXES | ascii_gate.TEXT_NAMES | ascii_gate.SKIP_DIRS

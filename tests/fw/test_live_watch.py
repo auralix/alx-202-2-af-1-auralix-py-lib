@@ -41,6 +41,8 @@ class FakeGdb:
         self.addrs = addrs
 
     def __call__(self, argv, capture_output, text, timeout, check):
+        assert capture_output, "gdb output must be captured to be parsed"
+        assert text, "gdb output must be text to be parsed"
         self.calls.append(argv)
         out = "".join(f"${i + 1} = 0x{a:08x}\n" for i, a in enumerate(self.addrs))
         return subprocess.CompletedProcess(
@@ -258,3 +260,10 @@ def test_ALX1544_P59_property_integer_formats_round_trip_and_reject_out_of_range
 def test_ALX1544_P60_property_f32_round_trips_within_single_precision(value):
     back = decode(encode(value, "f32"), "f32", f32_digits=6)
     assert back == pytest.approx(value, rel=1e-6, abs=1e-6)
+
+
+def test_ALX1544_P123_known_gdb_locations_are_absolute_gdb_executables():
+    assert live_watch.GDB_CANDIDATES, "mutation-driven hardening: the fallback list is not empty"
+    for candidate in live_watch.GDB_CANDIDATES:
+        assert candidate.is_absolute()
+        assert candidate.name.startswith("arm-none-eabi-gdb")

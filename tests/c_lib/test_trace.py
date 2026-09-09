@@ -5,8 +5,15 @@ Proofs (ALX-1544):
   P60 parse_banner extracts name, version, bin and the 7-char build hash from a boot transcript; {} without one
   P65 parse_line splits one [timestamp] [LEVEL] text line and returns None for anything else
   P66 parse_lines keeps only the trace lines of a mixed transcript (banner, JSON frame, noise)
+  P67 property: a formatted trace line parses back to its fields (Hypothesis)
+  P121 mutation-driven hardening: TraceLine is immutable
+  P122 mutation-driven hardening: undecodable bytes are replaced, never fatal; a bin name without an
+       underscore yields its stem as hash7
 """
 
+import dataclasses
+
+import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
@@ -74,3 +81,18 @@ def test_ALX1544_P67_property_a_formatted_trace_line_parses_back_to_its_fields(
     assert parsed is not None
     assert (parsed.timestamp, parsed.level, parsed.text) == (ts, level, text.rstrip("\r"))
     assert parse_lines(line * 3) == [parsed] * 3
+
+
+def test_ALX1544_P121_trace_line_is_immutable():
+    line = parse_line(b"[t] [INF] x")
+    assert line is not None
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        line.text = "y"  # type: ignore[misc]
+
+
+def test_ALX1544_P122_undecodable_bytes_are_replaced_and_underscore_free_bin_keeps_its_stem():
+    banner = BANNER.replace(b"FW Name: ExampleDeviceFw", b"FW Name: Example\xffDeviceFw")
+    assert parse_banner(banner)["name"] == "Example\ufffdDeviceFw"
+    assert parse_line(b"[t] [WRN] caf\xe9") == TraceLine("t", "WRN", "caf\ufffd")
+    plain = BANNER.replace(b"2609081200_EX-1_ExampleDeviceFw_V1-2-3_0123456.bin", b"image.bin")
+    assert parse_banner(plain)["hash7"] == "image"

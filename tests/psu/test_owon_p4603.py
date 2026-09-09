@@ -510,3 +510,10 @@ def test_ALX1544_P23_identity_parse_tolerates_a_short_string():
     ident = Identity.parse("OWON,P4603")
     assert ident == Identity("OWON,P4603", "OWON", "P4603", "", "")
     assert Identity.parse(IDN).firmware == "V1.9.0"
+
+
+def test_ALX1544_P128_identity_firmware_field_without_the_fv_prefix_and_short_identities():
+    """Mutation-driven hardening: the 4th field is the firmware whether or not it carries FV:."""
+    assert Identity.parse("OWON,P4603,123,1.9.0").firmware == "1.9.0"
+    assert Identity.parse("OWON,P4603,123").firmware == ""
+    assert Identity.parse("OWON,P4603,123").serial_number == "123"

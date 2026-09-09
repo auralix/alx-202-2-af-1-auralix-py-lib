@@ -133,3 +133,42 @@ def test_ALX1544_P113_cobertura_report_yields_the_same_figures(tmp_path):
         "alx/serial_logger.py: branches 83.3% < 100%",
     ]
     assert coverage_gate.main([str(xml), "--min", "80"]) == 0
+
+
+SPARSE_COBERTURA = """<?xml version="1.0" ?>
+<coverage>
+  <packages><package name="p"><classes>
+    <class name="bare.py"><lines/></class>
+    <class/>
+  </classes></package></packages>
+</coverage>
+"""
+
+
+def test_ALX1544_P130_sparse_entries_fall_back_safely_and_the_report_ends_with_a_newline(
+    tmp_path, capsys
+):
+    """Mutation-driven hardening: missing attributes and keys take the documented defaults."""
+    xml = tmp_path / "sparse.xml"
+    xml.write_text(SPARSE_COBERTURA, encoding="utf-8")
+    bare, unnamed = coverage_gate.load(xml)
+    assert bare == FileCoverage("bare.py", 0.0, 100.0, (), 0)
+    assert unnamed.name == "?"
+    assert FileCoverage("a", 1.0, 1.0) == FileCoverage("a", 1.0, 1.0, (), 0)
+    no_partial = {
+        "files": {
+            "m.py": {
+                "summary": {
+                    "num_statements": 1,
+                    "covered_lines": 1,
+                    "num_branches": 0,
+                    "covered_branches": 0,
+                }
+            }
+        }
+    }
+    assert coverage_gate.from_coverage_json(no_partial) == [
+        FileCoverage("m.py", 100.0, 100.0, (), 0)
+    ]
+    assert coverage_gate.main([str(xml), "--min", "0"]) == 0
+    assert capsys.readouterr().out.endswith("\n")

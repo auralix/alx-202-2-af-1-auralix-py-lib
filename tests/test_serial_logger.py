@@ -20,6 +20,10 @@ Proofs (ALX-1544):
   P92 main(): start reports the PID and the log path
   P93 a port that never opens is logged with the retry period; stop() is idempotent
   P94 a partial line still pending at stop is flushed as "(partial)"
+  P124 mutation-driven hardening: one heartbeat per heartbeat_s of silence, not one per loop turn
+  P125 mutation-driven hardening: a PID file with garbage reads as no pid, never a crash
+  P126 mutation-driven hardening: a stale PID file (process gone) is cleaned without a kill
+  P127 mutation-driven hardening: CLI defaults (115200 baud, 600 s heartbeat, 90 days) and --baud is an int
 """
 
 import re
@@ -113,15 +117,18 @@ def test_ALX1544_P82_silence_produces_heartbeats(tmp_path):
 
 
 def test_ALX1544_P83_lost_port_is_logged_reopened_and_counted(tmp_path):
-    first, second = FakePort([b"a\r\n", "LOST"]), FakePort([b"b\r\n"])
-    logger, text = run_logger(tmp_path, [first, second], reconnect_s=0.02)
-    assert "-- port FAKE1 lost: device gone" in text
-    assert text.count("-- port FAKE1 open") == 2
+    first, second = FakePort([b"a\r\n", "LOST"]), FakePort([b"b\r\n", "LOST"])
+    third = FakePort([b"c\r\n"])
+    logger, text = run_logger(tmp_path, [first, second, third], reconnect_s=0.02)
+    assert text.count("-- port FAKE1 lost: device gone") == 2
+    assert text.count("-- port FAKE1 open") == 3
     assert "] a" in text
     assert "] b" in text
+    assert "] c" in text
     assert first.closed
-    assert logger.gaps == 1
-    assert logger.lines == 2
+    assert second.closed
+    assert logger.gaps == 2, "every loss counts"
+    assert logger.lines == 3
 
 
 def test_ALX1544_P84_unopenable_port_is_retried(tmp_path):
@@ -321,3 +328,44 @@ def test_ALX1544_P94_a_partial_line_pending_at_stop_is_flushed(tmp_path):
     _, text = run_logger(tmp_path, [FakePort([b"no newline yet"])], run_s=0.15, idle_flush_s=10.0)
     assert "(partial) no newline yet" in text
     assert text.splitlines()[-1].endswith("-- stop: 1 lines, 0 port gaps")
+
+
+def test_ALX1544_P124_one_heartbeat_per_heartbeat_period(tmp_path):
+    _, text = run_logger(tmp_path, [FakePort([])], run_s=0.35, heartbeat_s=0.1)
+    beats = [ln for ln in text.splitlines() if "-- heartbeat: no data for" in ln]
+    assert 2 <= len(beats) <= 5, text
+
+
+def test_ALX1544_P125_garbage_pid_file_reads_as_no_pid(tmp_path):
+    soak = tmp_path / "soak"
+    soak.mkdir()
+    for junk in ("garbage", "", "12a"):
+        (soak / "serial_logger.pid").write_text(junk)
+        info = sl.status(soak)
+        assert info["pid"] is None
+        assert info["alive"] is False
+
+
+def test_ALX1544_P126_stale_pid_file_is_cleaned_without_a_kill(tmp_path, monkeypatch):
+    soak = tmp_path / "soak"
+    soak.mkdir()
+    (soak / "serial_logger.pid").write_text("4242")
+    killed: list[int] = []
+    monkeypatch.setattr(sl, "_pid_alive", lambda pid: False)
+    monkeypatch.setattr(sl, "_pid_kill", killed.append)
+    assert sl.stop_detached(soak) is False
+    assert killed == []
+    assert not (soak / "serial_logger.pid").exists()
+
+
+def test_ALX1544_P127_cli_defaults_and_int_baud(tmp_path, monkeypatch):
+    ran: dict[str, object] = {}
+
+    def fake_run(self):
+        ran.update(baud=self.baud, hb=self.heartbeat_s, keep=self.retention_days)
+
+    monkeypatch.setattr(SerialLogger, "run", fake_run)
+    assert sl.main(["run", "--port", "FAKE1", "--dir", str(tmp_path / "s")]) == 0
+    assert ran == {"baud": 115200, "hb": 600.0, "keep": 90}
+    with pytest.raises(SystemExit):
+        sl.main(["run", "--port", "FAKE1", "--dir", str(tmp_path / "s"), "--baud", "fast"])
