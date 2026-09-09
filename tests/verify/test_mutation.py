@@ -12,6 +12,9 @@ Proofs (ALX-1544):
   P110 the real pytest command runs the mirror test file of a scratch project (integration, one mutant)
   P111 universalmutator() generates numerically sorted mutant files; a missing tool is a MutationError
   P112 main() runs every source, prints the per-source counts and the report; a runner failure exits 1
+  P114 a run killed while a mutant was planted is repaired by the next start() from the backup copy, and
+       start() clears the previous run's mutants, survivors and reports
+  P115 a docstring-only mutant is EQUIVALENT (bytecode compared with docstrings stripped)
 """
 
 import json
@@ -85,18 +88,71 @@ def test_ALX1544_P106_bytecode_equivalence_and_stillborn():
     assert same != mutation.bytecode("x = 2\n", "m.py")
 
 
+def test_ALX1544_P115_docstring_only_mutant_is_equivalent():
+    original = '"""Module doc."""\n\n\ndef f(a):\n    """Return a."""\n    return a\n'
+    doc_mutant = original.replace("Module doc.", "Module True.").replace("Return a.", "Return.")
+    assert mutation.bytecode(original, "m.py") == mutation.bytecode(doc_mutant, "m.py")
+    assert mutation.bytecode(original, "m.py") != mutation.bytecode(
+        original.replace("return a", "return None"), "m.py"
+    )
+
+
 def test_ALX1544_P107_default_tests_for_mirrors_the_package_layout(tmp_path):
-    for rel in ("tests/pkg/test_mod.py", "tests/pkg/test_pkg.py", "tests/test_top.py"):
+    for rel in (
+        "tests/pkg/test_mod.py",
+        "tests/pkg/test_pkg.py",
+        "tests/test_top.py",
+        "tests/test_alx.py",
+    ):
         (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / rel).write_text("", encoding="utf-8")
-    for rel in ("alx/pkg/mod.py", "alx/pkg/__init__.py", "alx/top.py", "alx/pkg/other.py"):
+    for rel in (
+        "alx/pkg/mod.py",
+        "alx/pkg/__init__.py",
+        "alx/top.py",
+        "alx/pkg/other.py",
+        "alx/__init__.py",
+    ):
         (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / rel).write_text("", encoding="utf-8")
     f = mutation.default_tests_for
     assert f(tmp_path, tmp_path / "alx/pkg/mod.py") == tmp_path / "tests/pkg/test_mod.py"
     assert f(tmp_path, tmp_path / "alx/pkg/__init__.py") == tmp_path / "tests/pkg/test_pkg.py"
     assert f(tmp_path, tmp_path / "alx/top.py") == tmp_path / "tests/test_top.py"
+    assert f(tmp_path, tmp_path / "alx/__init__.py") == tmp_path / "tests/test_alx.py"
     assert f(tmp_path, tmp_path / "alx/pkg/other.py") == tmp_path / "tests"
+
+
+def test_ALX1544_P114_start_recovers_a_planted_source_and_clears_the_previous_run(tmp_path):
+    src = project(tmp_path)
+    out = tmp_path / "out"
+    # a previous run died mid-plant: the mutant sits in the tree, the original in the backup
+    (out / "backup" / "pkg").mkdir(parents=True)
+    (out / "backup" / "pkg" / "mod.py").write_text(SRC, encoding="utf-8")
+    src.write_text(MUTANTS["mod.mutant.0.py"], encoding="utf-8")
+    (out / "mutants" / "mod").mkdir(parents=True)
+    (out / "mutants" / "mod" / "mod.mutant.0.py").write_text("old", encoding="utf-8")
+    (out / "survivors").mkdir()
+    (out / "report.txt").write_text("old", encoding="utf-8")
+
+    run = MutationRun(tmp_path, out, generate=fake_generate, run=ScriptedRunner(src))
+    assert run.start() == ["pkg/mod.py"]
+    assert src.read_text(encoding="utf-8") == SRC, "the original is back"
+    assert not (out / "backup").exists()
+    assert not (out / "mutants").exists()
+    assert not (out / "survivors").exists()
+    assert not (out / "report.txt").exists()
+    assert run.start() == [], "nothing to recover the second time"
+
+    # a run that died between writing the backup and planting: the copy equals the source
+    (out / "backup" / "pkg").mkdir(parents=True)
+    (out / "backup" / "pkg" / "mod.py").write_text(SRC, encoding="utf-8")
+    assert run.start() == []
+    assert not (out / "backup").exists()
+
+    results = run.run_source(src)  # a normal run leaves no backup behind
+    assert len(results) == 3
+    assert not (out / "backup").exists()
 
 
 def test_ALX1544_P108_run_source_classifies_restores_and_reports(tmp_path):
@@ -226,10 +282,14 @@ def test_ALX1544_P112_main_runs_every_source_and_reports_or_fails(tmp_path, monk
         def report(self):
             return "REPORT\n"
 
+        def start(self):
+            return ["alx/left.py"]
+
     monkeypatch.setattr(mutation, "MutationRun", FakeRun)
     argv = ["--root", str(tmp_path), "--out", "o", "--sample", "5", "alx/ok.py"]
     assert mutation.main(argv) == 0
     out = capsys.readouterr().out
+    assert out.startswith("RECOVERED alx/left.py")
     assert "alx/ok.py: 1 killed, 1 survived" in out
     assert out.endswith("REPORT\n")
     assert mutation.main(["--root", str(tmp_path), "alx/bad.py"]) == 1

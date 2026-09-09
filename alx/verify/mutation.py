@@ -4,9 +4,9 @@
 The same procedure as the C library's mutation run, with the same generator (universalmutator) and
 without a compile step: for every mutant of a source file
 
-* ``STILLBORN``: the mutant does not even compile (``py_compile``); dropped before any test
-* ``EQUIVALENT``: the mutant compiles to the very same bytecode as the original (a whitespace or
-  comment change); dropped, nothing the interpreter sees has changed
+* ``STILLBORN``: the mutant does not even compile; dropped before any test
+* ``EQUIVALENT``: the mutant compiles to the very same bytecode as the original once docstrings are
+  stripped (a whitespace, comment or docstring change); dropped, nothing that runs has changed
 * ``KILLED``: the tests went red or hung (timeout) - the tests noticed the planted bug
 * ``SURVIVED``: the tests stayed green - a hole in the tests, or a behaviourally equivalent mutant;
   judge by the diff written to ``<out>/survivors/``
@@ -21,7 +21,9 @@ The tests of a source default to its mirror in ``tests/``: ``alx/pkg/mod.py`` ma
 ``tests/pkg/test_mod.py``, ``alx/pkg/__init__.py`` to ``tests/pkg/test_pkg.py`` and ``alx/mod.py``
 to ``tests/test_mod.py``; without a mirror the whole ``tests/`` folder runs. Each run is
 ``python -m pytest -q -x`` without random ordering and without the cache; bytecode caches are
-disabled while mutants are planted.
+disabled while mutants are planted. The original of a planted source is kept under
+``<out>/backup/`` until it is restored, so a run killed mid-plant (a reboot) is repaired by the
+next start, never left in the tree.
 """
 
 from __future__ import annotations
@@ -81,9 +83,13 @@ def universalmutator(source: Path, mutant_dir: Path) -> list[Path]:
 
 
 def bytecode(text: str, filename: str) -> bytes | None:
-    """Return the marshalled code object of ``text``; None when it does not compile."""
+    """Marshalled bytecode of ``text`` with docstrings stripped; None when it does not compile.
+
+    ``optimize=2`` drops docstrings (and asserts, which the library does not use), so a mutant that
+    only edits a docstring compares equal to the original: EQUIVALENT, never a survivor.
+    """
     try:
-        return marshal.dumps(compile(text, filename, "exec"))
+        return marshal.dumps(compile(text, filename, "exec", optimize=2))
     except (SyntaxError, ValueError):
         return None
 
@@ -92,7 +98,9 @@ def default_tests_for(root: Path, source: Path) -> Path:
     """Return the test file mirroring ``source`` under ``root/tests``, or the ``tests`` folder."""
     rel = source.resolve().relative_to(root.resolve())
     inner = Path(*rel.parts[1:])  # drop the package root folder (alx/)
-    if inner.name == "__init__.py":
+    if inner.name == "__init__.py" and inner.parent == Path():
+        candidate = root / "tests" / f"test_{rel.parts[0]}.py"  # the root package itself
+    elif inner.name == "__init__.py":
         candidate = root / "tests" / inner.parent / f"test_{inner.parent.name}.py"
     else:
         candidate = root / "tests" / inner.parent / f"test_{inner.stem}.py"
@@ -175,10 +183,34 @@ class MutationRun:
                 keep.append(mutant)
         return keep
 
+    # -- crash safety ---------------------------------------------------------------------
+    def recover(self) -> list[str]:
+        """Restore every source a crashed run left planted (its copy under ``out/backup``)."""
+        backup = self.out / "backup"
+        restored = []
+        for copy in sorted(p for p in backup.rglob("*") if p.is_file()):
+            rel = copy.relative_to(backup).as_posix()
+            target = self.root / rel
+            if not target.exists() or target.read_bytes() != copy.read_bytes():
+                target.write_bytes(copy.read_bytes())
+                restored.append(rel)
+        shutil.rmtree(backup, ignore_errors=True)
+        return restored
+
+    def start(self) -> list[str]:
+        """Begin a run: recover a crashed one, then clear the previous run's mutants and results."""
+        restored = self.recover()
+        for stale in ("mutants", "survivors"):
+            shutil.rmtree(self.out / stale, ignore_errors=True)
+        for stale_file in ("report.txt", "results.json"):
+            (self.out / stale_file).unlink(missing_ok=True)
+        return restored
+
     def run_source(self, source: Path) -> list[Outcome]:
         """Baseline, generate, filter, sample, plant and test each mutant, restore, verify."""
         source = source.resolve()
         rel = source.relative_to(self.root).as_posix()
+        self.recover()
         clear_pycache(self.root / rel.split("/")[0])
         base_s = self.baseline(source)
         timeout_s = max(self.min_timeout_s, self.timeout_factor * base_s)
@@ -187,6 +219,9 @@ class MutationRun:
             picked = random.Random(self.seed).sample(mutants, self.sample)  # noqa: S311
             mutants = sorted(picked)
         original = source.read_bytes()
+        backup = self.out / "backup" / rel
+        backup.parent.mkdir(parents=True, exist_ok=True)
+        backup.write_bytes(original)  # survives a crash; recover() puts it back next time
         results: list[Outcome] = []
         try:
             for mutant in mutants:
@@ -205,6 +240,7 @@ class MutationRun:
             clear_pycache(self.root / rel.split("/")[0])
         if source.read_bytes() != original:  # pragma: no cover - a write that did not stick
             raise MutationError(f"{source} not restored")
+        shutil.rmtree(self.out / "backup", ignore_errors=True)  # restored: nothing to recover
         rc, _ = self._pytest(source, timeout_s=600.0)
         if rc != 0:
             raise MutationError(f"suite red after restoring {source} (rc={rc})")
@@ -215,12 +251,13 @@ class MutationRun:
         survivors = self.out / "survivors"
         survivors.mkdir(parents=True, exist_ok=True)
         diff = difflib.unified_diff(
-            original.decode("utf-8", "replace").splitlines(keepends=True),
-            mutant.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True),
+            original.decode("utf-8", "replace").splitlines(),  # line endings do not count
+            mutant.read_text(encoding="utf-8", errors="replace").splitlines(),
             fromfile=source.name,
             tofile=mutant.name,
+            lineterm="",
         )
-        (survivors / f"{mutant.stem}.diff").write_text("".join(diff), encoding="utf-8")
+        (survivors / f"{mutant.stem}.diff").write_text("\n".join(diff) + "\n", encoding="utf-8")
 
     # -- report ---------------------------------------------------------------------------
     def counts(self) -> dict[str, int]:
@@ -280,6 +317,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     run = MutationRun(args.root, args.out, sample=args.sample, seed=args.seed)
     try:
+        for rel in run.start():
+            sys.stdout.write(f"RECOVERED {rel} (a previous run was interrupted while planted)\n")
         for src in args.sources:
             results = run.run_source(Path(args.root) / src)
             killed = sum(r.status == "KILLED" for r in results)
