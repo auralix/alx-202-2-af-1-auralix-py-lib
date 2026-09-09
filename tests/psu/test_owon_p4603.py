@@ -31,6 +31,8 @@ Proofs (ALX-1544):
   P21 v_max policy (no expect_v): output_on accepts any setpoint up to v_max, refuses above
   P22 factory_reset is refused by default; enabled, it sends *RST and the unit shows factory values
   P23 Identity.parse tolerates a short string
+  P170 one retry helper serves every exchange: the wait sits between attempts, never after the last
+  P171 _as_float answers None for what is not a number, so no exception is raised inside a loop
 """
 
 import itertools
@@ -40,6 +42,7 @@ import time
 
 import pytest
 
+import alx.psu.owon_p4603 as owon
 from alx.errors import InstrumentError
 from alx.psu.owon_p4603 import Identity, Limits, OwonP4603, State
 
@@ -517,3 +520,38 @@ def test_ALX1544_P128_identity_firmware_field_without_the_fv_prefix_and_short_id
     assert Identity.parse("OWON,P4603,123,1.9.0").firmware == "1.9.0"
     assert Identity.parse("OWON,P4603,123").firmware == ""
     assert Identity.parse("OWON,P4603,123").serial_number == "123"
+
+
+def test_ALX1544_P170_one_retry_helper_waits_between_attempts_never_after_the_last(bench):
+    """Four exchanges used to carry their own copy of the loop, each sleeping once too often."""
+    psu, fake = bench(FakeOwon(drop={"CURR?": 3}), tries=3, retry_wait_s=0.7)
+    bench.sleeps.clear()
+    with pytest.raises(InstrumentError, match="no answer"):
+        psu.setpoint_i()
+    assert cmds(fake).count("CURR?") == 3, "every try is used"
+    assert bench.sleeps == [0.7, 0.7], "two waits for three attempts, none after the last"
+
+    # a query that succeeds on the last try waits exactly as often as it failed
+    psu, fake = bench(FakeOwon(drop={"VOLT?": 2}), tries=3, retry_wait_s=0.7)
+    bench.sleeps.clear()
+    assert psu.setpoint_v() == 24.0
+    assert bench.sleeps == [0.7, 0.7]
+
+    # the confirmed setter is the same loop: settle before each read, the wait only between tries
+    late = FakeOwon(scripted={"VOLT?": ["24.000", "24.000"]})  # two stale read-backs, then 12 V
+    psu, fake = bench(late, limits=Limits(v_max=32.0), tries=3, retry_wait_s=0.7, settle_s=0.1)
+    bench.sleeps.clear()
+    assert psu.set_voltage(12.0) == 12.0
+    assert cmds(fake).count("VOLT 12.000") == 3, "three attempts"
+    assert bench.sleeps.count(0.1) == 3, "one settle per attempt"
+    assert bench.sleeps.count(0.7) == 2, "one wait between attempts, none after the last"
+
+
+def test_ALX1544_P171_as_float_answers_none_for_what_is_not_a_number():
+    """The retry loop asks a question and gets a value or None; it never catches an exception."""
+    assert owon._as_float("24.000") == 24.0
+    assert owon._as_float("-1e3") == -1000.0
+    assert owon._as_float("0") == 0.0, "zero is a value, not a failure"
+    assert owon._as_float("") is None
+    assert owon._as_float("OVP") is None
+    assert owon._as_float("24,0") is None

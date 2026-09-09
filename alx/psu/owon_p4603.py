@@ -58,7 +58,7 @@ import contextlib
 import logging
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, TypeVar
 
 import serial
 
@@ -71,6 +71,16 @@ log = logging.getLogger(__name__)
 
 CRLF = b"\r\n"
 KEYWORDS = ("MIN", "MAX", "DEF")
+
+_Answer = TypeVar("_Answer")
+
+
+def _as_float(text: str) -> float | None:
+    """Return the number ``text`` holds, or None when the instrument answered something else."""
+    try:
+        return float(text)
+    except ValueError:
+        return None
 
 
 class Port(Protocol):
@@ -226,46 +236,63 @@ class OwonP4603:
         line = self.ser.readline()
         return line.decode("ascii", "replace").strip()
 
+    def _retry(self, attempt: Callable[[], _Answer | None], failure: Callable[[], str]) -> _Answer:
+        """Run ``attempt`` up to ``tries`` times; None means "not yet". Raise with ``failure()``.
+
+        Every exchange with this supply is a retry loop, because a bench cable answers late or
+        garbled and the right response is to ask again, not to fail a test. The wait sits BETWEEN
+        attempts and never after the last one: at that point nobody is waiting for anything.
+        """
+        for number in range(self.tries):
+            answer = attempt()
+            if answer is not None:
+                return answer
+            if number + 1 < self.tries:
+                time.sleep(self.retry_wait_s)
+        raise InstrumentError(f"{self.port}: {failure()}")
+
     def query(self, cmd: str) -> str:
         """Query with retries; an empty answer (timeout) counts as a failed try."""
-        for _ in range(self.tries):
-            answer = self._exchange(cmd)
-            if answer:
-                return answer
-            time.sleep(self.retry_wait_s)
-        raise InstrumentError(f"{self.port}: no answer to {cmd!r} after {self.tries} tries")
+        return self._retry(
+            lambda: self._exchange(cmd) or None,
+            lambda: f"no answer to {cmd!r} after {self.tries} tries",
+        )
 
     def query_float(self, cmd: str) -> float:
         """Query a numeric answer with retries on garbage."""
-        for _ in range(self.tries):
-            try:
-                return float(self.query(cmd))
-            except ValueError:
-                time.sleep(self.retry_wait_s)
-        raise InstrumentError(f"{self.port}: no numeric answer to {cmd!r}")
+        return self._retry(
+            lambda: _as_float(self.query(cmd)),
+            lambda: f"no numeric answer to {cmd!r}",
+        )
 
     def _set_verified(self, cmd: str, value: float, query: str, tol: float) -> float:
         """Send ``cmd value``, settle, read back with ``query``; retry until it matches."""
         text = f"{value:.3f}"
         got = float("nan")
-        for _ in range(self.tries):
+
+        def attempt() -> float | None:
+            nonlocal got
             self._write(f"{cmd} {text}")
             time.sleep(self.settle_s)
             got = self.query_float(query)
             if abs(got - value) <= tol:
                 return got
-            time.sleep(self.retry_wait_s)
-        raise InstrumentError(f"{self.port}: {cmd} {text} not confirmed ({query} reads {got})")
+            return None
+
+        return self._retry(attempt, lambda: f"{cmd} {text} not confirmed ({query} reads {got})")
 
     def _set_output(self, on: bool) -> None:
         want = "1" if on else "0"
-        for _ in range(self.tries):
-            self._write("OUTP ON" if on else "OUTP OFF")
+        state = "ON" if on else "OFF"
+
+        def attempt() -> bool | None:
+            self._write(f"OUTP {state}")
             time.sleep(self.settle_s)
             if self.query("OUTP?") == want:
-                return
-            time.sleep(self.retry_wait_s)
-        raise InstrumentError(f"{self.port}: OUTP {'ON' if on else 'OFF'} not confirmed")
+                return True
+            return None
+
+        self._retry(attempt, lambda: f"OUTP {state} not confirmed")
 
     def _resolve(self, value: float | str, what: str, hw_max: float, default: float) -> float:
         """Turn MIN / MAX / DEF into the number they stand for; validate the type."""
