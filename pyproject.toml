@@ -93,7 +93,7 @@ docstring-code-format = true
 # ANALYZE stage 0 - spelling (codespell)
 [tool.codespell]
 skip = "./.venv,./.nox,./build,./uv.lock,./.git,./.mypy_cache,./.ruff_cache,./.hypothesis"
-ignore-words-list = "ser,caf"                # ser = the serial port variable; caf = test bytes
+ignore-words-list = "ser,caf,fo"           # ser = the serial port variable; caf = test bytes; Fo = clang-cl's object output flag
 
 # ANALYZE stage 1 - types (mypy, strict on the package; tests are checked but need no annotations)
 [tool.mypy]

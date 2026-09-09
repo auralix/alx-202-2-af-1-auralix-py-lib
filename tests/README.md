@@ -29,7 +29,10 @@ its lane, never skips it.
   - `alx.debug_probe`: facade `open()`, contracts `DebugProbe` and `MemoryAccess`, adapter `jlink`
   - `alx.psu`: instrument drivers (`owon_p4603`); a facade follows with the second model
   - `alx.c_lib`: clients of the Auralix C Library protocols - `cli` (framed JSON CLI over a serial
-    port, keeps trace bytes aside), `trace` (boot banner and `[ts] [LVL] text` line parsers)
+    port, keeps trace bytes aside), `trace` (boot banner and `[ts] [LVL] text` line parsers) - and
+    `host_build`, the other side of the same relationship: the host build that turns C sources into
+    the DLL a pytest suite drives through ctypes (toolchain, rebuild check, compile database,
+    one-step and two-step recipes, sanitizer and coverage variants)
   - `alx.fw`: the firmware image side - `live_watch` (variables by name, read and written through a
     probe while the core runs)
   - `alx.verify`: the pipeline's shared pieces for any repo - `lanes` (the noxfile vocabulary: stage
@@ -73,6 +76,7 @@ its lane, never skips it.
 
 #### BUILD - HOST
 - **Tools**
+	- `alx.c_lib.host_build` is what a C repository builds WITH in this stage; this repository has no C source, so its own BUILD stage is the Python one below
 	- `python -m compileall` (byte-compile = syntax over the whole package)
 	- `uv build` (PEP 517 sdist + wheel), twine `check --strict` (metadata), check-wheel-contents
 	- uv venv + install of the wheel + import of every module = install smoke
