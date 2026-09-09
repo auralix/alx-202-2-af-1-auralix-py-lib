@@ -12,7 +12,7 @@ Three report formats, one gate for every language of the pipeline:
 Every metric is gated on its own: a combined percentage would let missing branches hide behind
 covered lines. A metric with nothing to cover (no branches in the file) counts as 100 %. Usage::
 
-    python -m alx.verify.coverage_gate build/cov/coverage.xml --min 100 [--out gate.txt] [file ...]
+    python -m alx.verify.coverage_gate build/coverage/coverage.xml --min 100 [--out f] [file ...]
     python -m alx.verify.coverage_gate summary.json --metrics lines,branches,regions,functions foo.c
 
 Without file arguments every file in the report is gated; a file argument matches the report's path

@@ -1,8 +1,10 @@
 # Auralix Python Library - bench and HIL mechanisms shared by the device repos (package `alx`).
-# Device repos pin this repo as a git submodule and put its root on pytest's pythonpath, or install it:
-#   pip install -e <path-to-this-repo>
+# Consumers depend on it through a uv project in their test folder: a library repo pins a released tag
+# (alx-202-2-af-1-auralix-py-lib @ git+https://github.com/auralix/alx-202-2-af-1-auralix-py-lib@v0.1.0),
+# a device repo points uv at its submodule as an editable path source ([tool.uv.sources]).
+# Environment:                                uv sync --locked --extra dev
 # Offline tests (no instrument, no target):  python -m pytest
-# Verification lanes (tests/README.md):       nox -l
+# Verification lanes (tests/README.md):       uv run nox -l
 [build-system]
 requires = ["setuptools>=77"]                # >= 77: PEP 639 license expression + license-files
 build-backend = "setuptools.build_meta"
@@ -27,20 +29,19 @@ test = [                                     # TEST - HOST lane (and every lane 
     "pytest-randomly>=4",
     "hypothesis>=6",
 ]
-dev = [                                      # every lane: nox installs .[dev] into each session
+dev = [                                      # every lane: `uv sync --locked --extra dev`, nox runs the lanes in this environment
     "alx-202-2-af-1-auralix-py-lib[test]",
     "ruff>=0.5",                             # ANALYZE stage 0: format + lint (PEP 8 / 257, security rules)
     "codespell>=2",                          # ANALYZE stage 0: spelling
     "mypy>=1.10",                            # ANALYZE stage 1: types (PEP 484, strict)
     "types-pyserial",
-    "pip-audit>=2",                          # ANALYZE stage 2: dependency vulnerabilities
+    "pip-audit>=2",                          # ANALYZE stage 2: dependency vulnerabilities (over `uv export` of uv.lock)
     "coverage[toml]>=7",                     # COVERAGE
     "pytest-cov>=5",
     "universalmutator>=1.14",                # MUTATE (same generator as the C library)
-    "build>=1",                              # BUILD: sdist + wheel
-    "twine>=5",                              # BUILD: metadata check
+    "twine>=5",                              # BUILD: metadata check (the sdist + wheel come from `uv build`)
     "check-wheel-contents>=0.6",             # BUILD: wheel content check
-    "nox>=2024",                             # the lane runner
+    "nox>=2024",                             # the lane runner (sessions = the pipeline stages, alx.verify.lanes)
 ]
 
 [tool.setuptools]
@@ -113,11 +114,11 @@ disallow_incomplete_defs = false
 disallow_untyped_calls = false
 check_untyped_defs = true
 
-# COVERAGE - branch coverage of the package; gate in tests/coverage_gate.py, evidence under build/cov/
+# COVERAGE - branch coverage of the package; gate = alx.verify.coverage_gate, evidence under build/coverage/
 [tool.coverage.run]
 source = ["alx"]
 branch = true
-data_file = "build/cov/.coverage"
+data_file = "build/coverage/.coverage"
 
 [tool.coverage.report]
 show_missing = true
@@ -128,10 +129,10 @@ exclude_also = [
 ]
 
 [tool.coverage.xml]
-output = "build/cov/coverage.xml"
+output = "build/coverage/coverage.xml"
 
 [tool.coverage.html]
-directory = "build/cov/html"
+directory = "build/coverage/html"
 
 [tool.coverage.json]
-output = "build/cov/coverage.json"
+output = "build/coverage/coverage.json"

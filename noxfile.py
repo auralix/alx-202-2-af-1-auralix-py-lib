@@ -1,18 +1,18 @@
 # SPDX-License-Identifier: MIT
 """Verification lanes of the Auralix Python Library; the process is described in tests/README.md.
 
-Run::
+Run inside the repository's uv environment (``uv sync --locked --extra dev`` once)::
 
-    nox -l                  list the lanes
-    nox                     the default set: analyze, tests, sanitize, coverage, build
-    nox -s mutate           report-only mutation run (slow, on demand)
-    nox -s matrix           the suite on every supported interpreter (uv downloads missing ones)
-    nox -s tests -- -k cli  pass arguments through to pytest
+    uv run nox -l                  list the lanes
+    uv run nox                     the default set: build, test, analyze, sanitize, coverage
+    uv run nox -s mutate           report-only mutation run (slow, on demand)
+    uv run nox -s matrix           the suite on every supported interpreter (uv fetches them)
+    uv run nox -s test -- -k cli   pass arguments through to pytest
 
-Every lane runs in its own virtual environment with ``.[dev]`` installed and writes its evidence
-under ``build/<lane>/``; the dev lane (``tests``) writes to ``build/`` directly, like the C library.
-Environments are reused between runs (``nox -r`` behaviour is the default here); ``nox --no-reuse``
-rebuilds them.
+The sessions are named after the pipeline stages (``alx.verify.lanes.STAGES``) and run in the
+repository's own environment, no second environment per lane; only ``matrix`` creates one venv per
+interpreter under ``.nox/``. Evidence lands under ``build/<stage>/``; the dev lane (``test``) writes
+to ``build/`` directly, like the C library.
 """
 
 from __future__ import annotations
@@ -23,28 +23,23 @@ from pathlib import Path
 
 import nox
 
-nox.options.default_venv_backend = "uv|virtualenv"
-nox.options.reuse_existing_virtualenvs = True
-nox.options.sessions = ["analyze", "tests", "sanitize", "coverage", "build"]
+from alx.verify import lanes
+
+nox.options.default_venv_backend = "none"
+nox.options.sessions = list(lanes.DEFAULT_SESSIONS)
 
 ROOT = Path(__file__).parent
-BUILD = ROOT / "build"
+PYTHON = sys.executable
 PYTHONS = ["3.10", "3.11", "3.12", "3.13"]
 
 
-def _install(session: nox.Session) -> None:
-    session.install("-e", ".[dev]")
-
-
-def _reports(lane: str) -> list[str]:
-    """Return the pytest report options that put junit + html evidence under build/<lane>/."""
-    out = BUILD / lane
-    out.mkdir(parents=True, exist_ok=True)
-    return [
-        f"--junitxml={out.as_posix()}/pytest_report.xml",
-        f"--html={out.as_posix()}/pytest_report.html",
-        "--self-contained-html",
-    ]
+def _uv() -> str:
+    """Return the uv executable; uv is the environment standard of every Auralix repository."""
+    uv = shutil.which("uv")
+    if uv is None:
+        msg = "uv not found on PATH (install uv; it manages the environment of every lane)"
+        raise FileNotFoundError(msg)
+    return uv
 
 
 def _venv_python(venv: Path) -> Path:
@@ -52,27 +47,101 @@ def _venv_python(venv: Path) -> Path:
 
 
 @nox.session
+def build(session: nox.Session) -> None:
+    """BUILD - HOST: byte-compile, sdist + wheel, metadata and content checks, install smoke."""
+    out = ROOT / "build" / lanes.BUILD_PRODUCT
+    shutil.rmtree(out, ignore_errors=True)
+    lanes.evidence_dir(ROOT, lanes.BUILD_PRODUCT)
+    uv = _uv()
+    session.run(PYTHON, "-m", "compileall", "-q", "alx")
+    session.run(uv, "build", "--quiet", "--out-dir", str(out), ".", external=True)
+    wheels = sorted(out.glob("*.whl"))
+    sdists = sorted(out.glob("*.tar.gz"))
+    session.run(PYTHON, "-m", "twine", "check", "--strict", *map(str, wheels + sdists))
+    session.run(PYTHON, "-m", "check_wheel_contents", *map(str, wheels))
+    smoke = out / "smoke"
+    session.run(uv, "venv", "-q", str(smoke), external=True)
+    session.run(uv, "pip", "install", "-q", "--python", str(smoke), str(wheels[0]), external=True)
+    session.run(
+        str(_venv_python(smoke)),
+        "-c",
+        "import alx, alx.debug_probe, alx.debug_probe.jlink, alx.psu.owon_p4603, alx.c_lib.cli, "
+        "alx.c_lib.trace, alx.fw.live_watch, alx.serial_logger, alx.verify, alx.verify.evidence, "
+        "alx.verify.lanes; print('installed alx', alx.__version__)",
+        external=True,
+    )
+    session.log(f"BUILD CLEAN - {[w.name for w in wheels + sdists]} in {out}")
+
+
+@nox.session
+def test(session: nox.Session) -> None:
+    """TEST - HOST: the offline suite in random order; evidence build/pytest_report.xml + .html."""
+    session.run(PYTHON, "-m", "pytest", *session.posargs)
+
+
+@nox.session(python=PYTHONS, venv_backend="uv|virtualenv", reuse_venv=True)
+def matrix(session: nox.Session) -> None:
+    """TEST - HOST on every supported interpreter; evidence under build/matrix/py<ver>/."""
+    session.install("-e", ".[test]")
+    out = lanes.evidence_dir(ROOT, "matrix", f"py{str(session.python).replace('.', '')}")
+    session.run(
+        "python",
+        "-m",
+        "pytest",
+        "-p",
+        "no:cacheprovider",
+        *lanes.pytest_reports(out),
+        *session.posargs,
+    )
+
+
+@nox.session
 def analyze(session: nox.Session) -> None:
     """ANALYZE: 0 style (ruff, codespell, ASCII), 1 types (mypy), 2 dependencies (pip-audit)."""
-    _install(session)
-    out = BUILD / "analysis"
-    out.mkdir(parents=True, exist_ok=True)
+    out = lanes.evidence_dir(ROOT, "analyze")
     session.log("Stage 0: ruff format --check, ruff check, codespell, ascii gate")
-    session.run("ruff", "format", "--check", ".")
-    session.run("ruff", "check", ".")
+    session.run(PYTHON, "-m", "ruff", "format", "--check", ".")
+    session.run(PYTHON, "-m", "ruff", "check", ".")
     session.run(
-        "ruff", "check", ".", "--output-format", "junit", "--output-file", str(out / "ruff.xml")
+        PYTHON,
+        "-m",
+        "ruff",
+        "check",
+        ".",
+        "--output-format",
+        "junit",
+        "--output-file",
+        str(out / "ruff.xml"),
     )
-    session.run("codespell")
-    session.run("python", "-m", "alx.verify.ascii_gate", ".", "--out", str(out / "ascii_gate.txt"))
+    session.run(PYTHON, "-m", "codespell_lib")
+    session.run(PYTHON, "-m", "alx.verify.ascii_gate", ".", "--out", str(out / "ascii_gate.txt"))
     session.log("Stage 1: mypy (strict on the package, tests checked)")
-    session.run("mypy", "--junit-xml", str(out / "mypy.xml"))
-    session.log("Stage 2: pip-audit over the lane environment")
+    session.run(PYTHON, "-m", "mypy", "--junit-xml", str(out / "mypy.xml"))
+    session.log("Stage 2: pip-audit over the locked dependencies (uv.lock)")
+    requirements = out / "requirements.txt"
     session.run(
-        "pip-audit",
+        _uv(),
+        "export",
+        "--locked",
+        "--extra",
+        "dev",
+        "--no-emit-project",
+        "--no-hashes",
+        "--quiet",
+        "-o",
+        str(requirements),
+        external=True,
+    )
+    session.run(
+        PYTHON,
+        "-m",
+        "pip_audit",
+        "--disable-pip",
+        "--no-deps",
         "--progress-spinner",
         "off",
-        "--skip-editable",
+        "-r",
+        str(requirements),
         "--format",
         "json",
         "--output",
@@ -82,26 +151,11 @@ def analyze(session: nox.Session) -> None:
 
 
 @nox.session
-def tests(session: nox.Session) -> None:
-    """TEST - HOST: the offline suite in random order; evidence build/pytest_report.xml + .html."""
-    _install(session)
-    session.run("pytest", *session.posargs)
-
-
-@nox.session(python=PYTHONS, name="matrix")
-def matrix(session: nox.Session) -> None:
-    """TEST - HOST on every supported interpreter; evidence under build/matrix/py<ver>/."""
-    _install(session)
-    lane = f"matrix/py{str(session.python).replace('.', '')}"
-    session.run("pytest", "-p", "no:cacheprovider", *_reports(lane), *session.posargs)
-
-
-@nox.session
 def sanitize(session: nox.Session) -> None:
     """SANITIZE: the same suite under -X dev (allocator hooks, tracemalloc, warnings as errors)."""
-    _install(session)
+    out = lanes.evidence_dir(ROOT, "sanitize")
     session.run(
-        "python",
+        PYTHON,
         "-X",
         "dev",
         "-X",
@@ -114,7 +168,7 @@ def sanitize(session: nox.Session) -> None:
         "pytest",
         "-p",
         "no:cacheprovider",
-        *_reports("sanitize"),
+        *lanes.pytest_reports(out),
         *session.posargs,
     )
 
@@ -122,11 +176,12 @@ def sanitize(session: nox.Session) -> None:
 @nox.session
 def coverage(session: nox.Session) -> None:
     """COVERAGE: branch coverage over the suite; gate = 100 % lines and branches per file."""
-    _install(session)
-    out = BUILD / "cov"
+    out = ROOT / "build" / "coverage"
     shutil.rmtree(out, ignore_errors=True)
-    out.mkdir(parents=True)
+    lanes.evidence_dir(ROOT, "coverage")
     session.run(
+        PYTHON,
+        "-m",
         "pytest",
         "-p",
         "no:cacheprovider",
@@ -136,11 +191,11 @@ def coverage(session: nox.Session) -> None:
         "--cov-report=xml",
         "--cov-report=html",
         "--cov-report=json",
-        *_reports("cov"),
+        *lanes.pytest_reports(out),
         *session.posargs,
     )
     session.run(
-        "python",
+        PYTHON,
         "-m",
         "alx.verify.coverage_gate",
         str(out / "coverage.xml"),
@@ -154,52 +209,16 @@ def coverage(session: nox.Session) -> None:
 @nox.session
 def mutate(session: nox.Session) -> None:
     """MUTATE (report-only): universalmutator mutants of each module run against its tests."""
-    _install(session)
     sources = session.posargs or [
         p.relative_to(ROOT).as_posix() for p in sorted((ROOT / "alx").rglob("*.py"))
     ]
     session.run(
-        "python",
+        PYTHON,
         "-m",
         "alx.verify.mutation",
         "--out",
-        str(BUILD / "mutation"),
+        str(ROOT / "build" / "mutate"),
         "--sample",
         "100",
         *sources,
     )
-
-
-@nox.session
-def build(session: nox.Session) -> None:
-    """BUILD - HOST: byte-compile, sdist + wheel, metadata and content checks, install smoke."""
-    _install(session)
-    out = BUILD / "dist"
-    shutil.rmtree(out, ignore_errors=True)
-    session.run("python", "-m", "compileall", "-q", "alx")
-    session.run("python", "-m", "build", "--outdir", str(out), ".")
-    wheels = sorted(out.glob("*.whl"))
-    sdists = sorted(out.glob("*.tar.gz"))
-    session.run("twine", "check", "--strict", *map(str, wheels + sdists))
-    session.run("check-wheel-contents", *map(str, wheels))
-    smoke = out / "smoke"
-    uv = shutil.which("uv")
-    if uv:
-        session.run(uv, "venv", "-q", str(smoke), external=True)
-        session.run(
-            uv, "pip", "install", "-q", "--python", str(smoke), str(wheels[0]), external=True
-        )
-    else:
-        session.run("python", "-m", "venv", str(smoke))
-        session.run(
-            str(_venv_python(smoke)), "-m", "pip", "install", "-q", str(wheels[0]), external=True
-        )
-    session.run(
-        str(_venv_python(smoke)),
-        "-c",
-        "import alx, alx.debug_probe, alx.debug_probe.jlink, alx.psu.owon_p4603, alx.c_lib.cli, "
-        "alx.c_lib.trace, alx.fw.live_watch, alx.serial_logger, alx.verify, alx.verify.evidence; "
-        "print('installed alx', alx.__version__)",
-        external=True,
-    )
-    session.log(f"BUILD CLEAN - {[w.name for w in wheels + sdists]} in {out}")

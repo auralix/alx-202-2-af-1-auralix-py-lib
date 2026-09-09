@@ -18,7 +18,7 @@ Kill rate = killed / (killed + survived). Report-only: exit code 0 unless the ru
 (red baseline, source not restored). 100 % is not the target; the survivor diffs are the output.
 Usage::
 
-    python -m alx.verify.mutation [--out build/mutation] [--sample 100] [--seed 1] src.py ...
+    python -m alx.verify.mutation [--out build/mutate] [--sample 100] [--seed 1] src.py ...
     python -m alx.verify.mutation --tests-dir Test --rebuild-cmd "<build the test DLL>" \
         --check-cmd "clang -fsyntax-only {mutant}" --fingerprint-cmd "<hash of {mutant}>" alxFoo.c
 
@@ -444,7 +444,7 @@ def main(argv: list[str] | None = None) -> int:
         "sources", nargs="+", help="source files to mutate (relative to the repo root)"
     )
     parser.add_argument("--root", default=".", help="repository root (default: current folder)")
-    parser.add_argument("--out", default="build/mutation", help="output folder")
+    parser.add_argument("--out", default="build/mutate", help="output folder (the lane's evidence)")
     parser.add_argument("--sample", type=int, default=0, help="mutants per source, 0 = all")
     parser.add_argument("--seed", type=int, default=1, help="sampling seed")
     parser.add_argument(
