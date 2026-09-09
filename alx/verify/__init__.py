@@ -10,6 +10,8 @@ library's own modules: paths, thresholds and commands come from the caller (the 
 * ``evidence``: the pytest plugin every suite loads - proof tokens and ``req`` markers into junit
   properties, the per-run folder, repository heads (this one runs inside the test process).
 * ``ascii_gate``: every text file is pure ASCII.
+* ``readme_gate``: every Markdown file uses the heading levels ``#``, ``##``, ``####`` only, and no
+  horizontal rules.
 * ``coverage_gate``: every file of a coverage report (cobertura, llvm-cov, coverage.py) reaches the
   minimum in every gated metric.
 * ``mutation``: plant each mutant of a source, run its tests, classify, report the survivors.

@@ -97,9 +97,9 @@ def matrix(session: nox.Session) -> None:
 
 @nox.session
 def analyze(session: nox.Session) -> None:
-    """ANALYZE: 0 style (ruff, codespell, ASCII), 1 types (mypy), 2 dependencies (pip-audit)."""
+    """ANALYZE: 0 style (ruff, codespell, ASCII, README), 1 types (mypy), 2 deps (pip-audit)."""
     out = lanes.evidence_dir(ROOT, "analyze")
-    session.log("Stage 0: ruff format --check, ruff check, codespell, ascii gate")
+    session.log("Stage 0: ruff format --check, ruff check, codespell, ascii gate, readme gate")
     session.run(PYTHON, "-m", "ruff", "format", "--check", ".")
     session.run(PYTHON, "-m", "ruff", "check", ".")
     session.run(
@@ -115,6 +115,7 @@ def analyze(session: nox.Session) -> None:
     )
     session.run(PYTHON, "-m", "codespell_lib")
     session.run(PYTHON, "-m", "alx.verify.ascii_gate", ".", "--out", str(out / "ascii_gate.txt"))
+    session.run(PYTHON, "-m", "alx.verify.readme_gate", ".", "--out", str(out / "readme_gate.txt"))
     session.log("Stage 1: mypy (strict on the package, tests checked)")
     session.run(PYTHON, "-m", "mypy", "--junit-xml", str(out / "mypy.xml"))
     session.log("Stage 2: pip-audit over the locked dependencies (uv.lock)")
