@@ -143,7 +143,7 @@ def coverage(session: nox.Session) -> None:
         "python",
         "-m",
         "alx.verify.coverage_gate",
-        str(out / "coverage.json"),
+        str(out / "coverage.xml"),
         "--min",
         "100",
         "--out",
