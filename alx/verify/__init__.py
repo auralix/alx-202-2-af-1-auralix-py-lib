@@ -1,10 +1,12 @@
 # SPDX-License-Identifier: MIT
-"""Gates of the verification lanes, usable by any repository (this one, a C library, a device repo).
+"""Shared pieces of the verification pipeline, for any repository (py-lib, C library, device repo).
 
-Each module is a command (``python -m alx.verify.<gate> ...``) and a function; every gate prints its
+The gates are commands (``python -m alx.verify.<gate> ...``) and functions; every gate prints its
 verdict, writes it to ``--out`` when asked, and exits 0 = PASS / 1 = FAIL. Nothing here knows the
 library's own modules: paths, thresholds and commands come from the caller (the lane runner).
 
+* ``evidence``: the pytest plugin every suite loads - proof tokens and ``req`` markers into junit
+  properties, the per-run folder, repository heads (this one runs inside the test process).
 * ``ascii_gate``: every text file is pure ASCII.
 * ``coverage_gate``: every file of a coverage.py JSON report reaches the minimum (lines, branches).
 * ``mutation``: plant each mutant of a source, run its tests, classify, report the survivors.

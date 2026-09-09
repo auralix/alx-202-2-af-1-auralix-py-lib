@@ -198,7 +198,7 @@ def build(session: nox.Session) -> None:
         str(_venv_python(smoke)),
         "-c",
         "import alx, alx.debug_probe, alx.debug_probe.jlink, alx.psu.owon_p4603, alx.c_lib.cli, "
-        "alx.c_lib.trace, alx.fw.live_watch, alx.serial_logger, alx.testing, alx.verify; "
+        "alx.c_lib.trace, alx.fw.live_watch, alx.serial_logger, alx.verify, alx.verify.evidence; "
         "print('installed alx', alx.__version__)",
         external=True,
     )

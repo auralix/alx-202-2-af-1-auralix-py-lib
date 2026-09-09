@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""Helpers for the pytest suites that use the library (the ``numpy.testing`` idea): evidence.
+"""Evidence of a pytest run: proof tokens into junit, the per-run folder, repository heads.
 
 * traceability hook: the proof token in a test's name (``test_ALX<key>_P<n>_...``) is the primary
   trace link; it is mirrored into the junit XML as ``<property name="proof">``, every
@@ -11,13 +11,13 @@
 
 Load from a suite's ``conftest.py``, one of two ways::
 
-    pytest_plugins = ("alx.testing",)  # when the conftest does not import alx.testing
+    pytest_plugins = ("alx.verify.evidence",)  # when the conftest does not import this module
 
-    from alx import testing  # when it does (for run_dir, git_head):
+    from alx.verify import evidence  # when it does (for run_dir, git_head):
 
 
     def pytest_configure(config):  # register the imported module; loading it by
-        config.pluginmanager.register(testing, "alx.testing")  # name afterwards = rewrite warning
+        config.pluginmanager.register(evidence, "alx.verify.evidence")  # name = rewrite warning
 
 Nothing here touches hardware or firmware; host suites and bench suites use it alike.
 """

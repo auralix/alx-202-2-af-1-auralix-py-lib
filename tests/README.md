@@ -135,11 +135,12 @@ environments; `nox --no-reuse` rebuilds them. A missing tool fails its lane, nev
     port, keeps trace bytes aside), `trace` (boot banner and `[ts] [LVL] text` line parsers)
   - `alx.fw`: the firmware image side - `live_watch` (variables by name, read and written through a
     probe while the core runs)
-  - `alx.testing`: pytest evidence helpers (proof properties, `run_dir`, `git_head`)
-  - `alx.verify`: the lane gates as commands (`ascii_gate`, `coverage_gate`, `mutation`), for any repo
+  - `alx.verify`: the pipeline's shared pieces for any repo - `evidence` (the pytest plugin: proof
+    properties, `run_dir`, `git_head`) and the lane gates as commands (`ascii_gate`, `coverage_gate`,
+    `mutation`)
   - `alx.serial_logger` (days-long UART logging, the soak mode), `alx.errors`
 - Naming: abbreviate what the domain abbreviates (psu, fw, cli, mcu, uart, can), spell out common
-  Python words (errors, testing, verify, debug), never shadow the stdlib (test, io, time, serial); a
+  Python words (errors, evidence, verify, debug), never shadow the stdlib (test, io, time, serial); a
   module is named after its class in snake_case, instrument modules as manufacturer_model.
 - Types: what a module needs from a transport or a probe is a `Protocol` (`cli.Wire`,
   `owon_p4603.Port`, `serial_logger.Port`, `debug_probe.MemoryAccess`); pyserial and the adapters
@@ -185,8 +186,8 @@ environments; `nox --no-reuse` rebuilds them. A missing tool fails its lane, nev
 ## Conventions
 
 - Proof naming: `test_ALX<key>_P<n>_<behavior>`; the proof token stays forever, later tasks attach
-  `@pytest.mark.req("ALX-<key>-P<n>")`; `alx.testing` mirrors both into junit `<property>` elements.
-  Loading it: `pytest_plugins = ("alx.testing",)` when the conftest does not import it (this suite),
+  `@pytest.mark.req("ALX-<key>-P<n>")`; `alx.verify.evidence` mirrors both into junit `<property>` elements.
+  Loading it: `pytest_plugins = ("alx.verify.evidence",)` when the conftest does not import it (this suite),
   else register the imported module in `pytest_configure` (a device conftest that also uses `run_dir`).
 - A known defect is sealed as `xfail(strict=True)` with the finding as the reason; it XPASSes when
   fixed and the marker is removed in the green commit.

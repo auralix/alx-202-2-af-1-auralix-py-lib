@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""alx.testing - evidence helpers for pytest suites (no hardware).
+"""alx.verify.evidence - the evidence of a pytest run (no hardware).
 
 Proofs (ALX-1544):
   P61 the collection hook mirrors the proof token of the test NAME and every req marker into user_properties
@@ -14,8 +14,8 @@ from typing import Any
 
 import pytest
 
-import alx.testing as testing
-from alx.testing import git_head, pytest_collection_modifyitems, run_dir
+import alx.verify.evidence as evidence
+from alx.verify.evidence import git_head, pytest_collection_modifyitems, run_dir
 
 
 class _Mark:
@@ -51,7 +51,7 @@ def test_ALX1544_P61_hook_mirrors_proof_token_and_req_markers():
 
 
 def test_ALX1544_P62_git_head_of_a_repo_and_outside_one(tmp_path):
-    head = git_head(Path(testing.__file__).parent)
+    head = git_head(Path(evidence.__file__).parent)
     assert re.fullmatch(r"[0-9a-f]{7,}", head), head
     assert git_head(tmp_path) == "?"
 

@@ -44,7 +44,7 @@ dev = [                                      # every lane: nox installs .[dev] i
 ]
 
 [tool.setuptools]
-packages = ["alx", "alx.debug_probe", "alx.psu", "alx.c_lib", "alx.fw", "alx.testing", "alx.verify"]
+packages = ["alx", "alx.debug_probe", "alx.psu", "alx.c_lib", "alx.fw", "alx.verify"]
 
 [tool.pytest.ini_options]
 minversion = "8.0"
