@@ -5,8 +5,8 @@ The Auralix C Library CLI takes one command line and answers with one JSON docum
 framed by its braces: ``read_json`` stops when they balance (braces inside strings ignored) and the
 closing CR LF has arrived, no fixed waits, pretty and compact responses alike. Bytes before the
 first brace are trace output the device shares on the same UART (boot banner, ``[INF]`` lines); they
-are logged as ``RX(trace)`` and skipped. Bytes after the frame (pipelined responses) are held back
-for the next read.
+are logged as ``RX(trace)``, kept in ``trace_rx`` for ``alx.c_lib.trace`` to parse, and never enter
+a frame. Bytes after the frame (pipelined responses) are held back for the next read.
 
 Every byte in both directions goes to the wire log with a timestamp relative to construction, and
 ``note`` adds free-text lines, so the log reads as the transcript of the session. The serial port
@@ -30,6 +30,7 @@ class Cli:
         self.latencies_ms: list[float] = []  # round-trip times of framed commands (for the report)
         self._pending = b""  # bytes received beyond the last frame (pipelined responses)
         self.identity: dict = {}  # filled by the session owner (e.g. the parsed boot banner)
+        self.trace_rx = bytearray()  # trace bytes read_json skipped; take_trace() hands them over
 
     # -- raw wire ---------------------------------------------------------------------
     def _logline(self, direction: str, data: bytes) -> None:
@@ -127,9 +128,16 @@ class Cli:
                     break
         if pre:
             self._logline("RX(trace)", pre)
+            self.trace_rx += pre
         if buf:
             self._logline("RX", buf)
         return buf
+
+    def take_trace(self) -> bytes:
+        """Return the trace bytes skipped by ``read_json`` since the last call, and forget them."""
+        out = bytes(self.trace_rx)
+        self.trace_rx.clear()
+        return out
 
     # -- command level ------------------------------------------------------------------
     def command(self, line: bytes, total_s: float = 2.0) -> bytes:

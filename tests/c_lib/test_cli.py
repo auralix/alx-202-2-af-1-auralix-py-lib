@@ -22,6 +22,7 @@ Proofs (ALX-1544):
   P34 close() closes the wire log
   P35 the typed wrappers (help, reset, id, get, get_param, get_var, get_flag, get_const, get_trig) send the c-lib CLI lines
   P36 set_param accepts str or bytes; get_params is the "data" shortcut of get_param
+  P37 trace bytes skipped by read_json accumulate in trace_rx; take_trace hands them to alx.c_lib.trace
 """
 
 import json
@@ -244,3 +245,27 @@ def test_ALX1544_P36_set_param_accepts_str_or_bytes_and_get_params_is_the_data_s
     assert cli.set_param(b"B_en", "true") == {"status": "success"}
     assert wire.tx[-1] == b"set-param --key B_en --val true\r"
     assert cli.get_params() == cli.get_param()["data"] == {"A_pct": 7, "B_en": True}
+
+
+def test_ALX1544_P37_trace_bytes_skipped_by_read_json_are_kept_for_the_trace_parser(session):
+    from alx.c_lib.trace import parse_lines
+
+    first = b"[2000-01-01 00:00:00.103] [INF] AlxParamGroup_CrcOkSame_UsedCopyA\r\n"
+    second = b"[2000-01-01 00:00:00.500] [WRN] late\r\n"
+    cli, wire = session(chunks=[first + OK, second + OK])
+    assert cli.trace_rx == b""
+    assert cli.read_json(total_s=0.5) == OK
+    assert cli.read_json(total_s=0.5) == OK
+    assert bytes(cli.trace_rx) == first + second, (
+        "trace accumulates across frames, frames never enter it"
+    )
+    cli.flush_rx()
+    assert bytes(cli.trace_rx) == first + second, (
+        "flush_rx drops port bytes, not the collected trace"
+    )
+    lines = parse_lines(cli.take_trace())
+    assert [(ln.level, ln.text) for ln in lines] == [
+        ("INF", "AlxParamGroup_CrcOkSame_UsedCopyA"),
+        ("WRN", "late"),
+    ]
+    assert cli.take_trace() == b"" and cli.trace_rx == b""
