@@ -33,10 +33,18 @@ import re
 import shutil
 import struct
 import subprocess
-from collections.abc import Iterable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from alx.errors import ProbeError
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Mapping
+
+    from alx.debug_probe import MemoryAccess
+
+Value = bool | int | float
+Entry = tuple[str | int, str]  # (C expression or absolute address, format)
 
 # format -> (struct code, size); little-endian Cortex-M
 FORMATS = {
@@ -74,9 +82,13 @@ def resolve_addresses(gdb: str | Path, elf: str | Path, exprs: Iterable[str]) ->
     for expr in exprs:
         cmds += ["-ex", f"print/x &{expr}"]
     result = subprocess.run(
-        [str(gdb), "--batch", *cmds, str(elf)], capture_output=True, text=True, timeout=60
+        [str(gdb), "--batch", *cmds, str(elf)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
     )
-    addrs = re.findall(r"^\$\d+ = (0x[0-9a-fA-F]+)", result.stdout, re.M)
+    addrs = re.findall(r"^\$\d+ = (0x[0-9a-fA-F]+)", result.stdout, re.MULTILINE)
     if len(addrs) != len(exprs):
         raise ProbeError(
             f"gdb resolved {len(addrs)} of {len(exprs)} symbols:\n"
@@ -85,10 +97,10 @@ def resolve_addresses(gdb: str | Path, elf: str | Path, exprs: Iterable[str]) ->
     return [int(a, 16) for a in addrs]
 
 
-def decode(raw: bytes, fmt: str, f32_digits: int = 2):
+def decode(raw: bytes, fmt: str, f32_digits: int = 2) -> Value:
     """Decode the first bytes of ``raw`` as ``fmt`` (see FORMATS); f32 rounded to f32_digits."""
     code, size = FORMATS[fmt]
-    value = struct.unpack(code, bytes(raw[:size]))[0]
+    value: int | float = struct.unpack(code, bytes(raw[:size]))[0]
     if fmt == "bool":
         return bool(value)
     if fmt == "f32":
@@ -96,7 +108,7 @@ def decode(raw: bytes, fmt: str, f32_digits: int = 2):
     return value
 
 
-def encode(value, fmt: str) -> bytes:
+def encode(value: Value, fmt: str) -> bytes:
     """Encode ``value`` as ``fmt`` (see FORMATS); raises ValueError when it does not fit."""
     code, _ = FORMATS[fmt]
     if fmt == "bool":
@@ -107,7 +119,7 @@ def encode(value, fmt: str) -> bytes:
         raise ValueError(f"{value!r} does not fit {fmt}: {ex}") from ex
 
 
-def _is_address(expr) -> bool:
+def _is_address(expr: object) -> bool:
     return isinstance(expr, int) or (
         isinstance(expr, str) and expr.strip().lower().startswith("0x")
     )
@@ -116,7 +128,13 @@ def _is_address(expr) -> bool:
 class LiveWatch:
     """Named firmware variables of one ELF, read and written through a probe while the core runs."""
 
-    def __init__(self, probe, elf: str | Path, variables: dict, gdb: str | Path | None = None):
+    def __init__(
+        self,
+        probe: MemoryAccess,
+        elf: str | Path,
+        variables: Mapping[str, Entry],
+        gdb: str | Path | None = None,
+    ):
         """Bind ``variables`` (``{name: (expression | address, format)}``) of ``elf`` to ``probe``.
 
         ``probe`` is anything with ``read_mem`` and ``write_mem`` (an ``alx.debug_probe`` adapter).
@@ -124,19 +142,19 @@ class LiveWatch:
         """
         self.probe = probe
         self.elf = Path(elf)
-        self.variables = dict(variables)
+        self.variables: dict[str, Entry] = dict(variables)
         for name, (_, fmt) in self.variables.items():
             if fmt not in FORMATS:
                 raise ValueError(f"{name}: unknown format {fmt!r} (known: {', '.join(FORMATS)})")
         if not self.elf.exists():
             raise ProbeError(f"ELF of the flashed build not found: {self.elf}")
         self.addr: dict[str, int] = {}
-        symbolic = []
+        symbolic: list[tuple[str, str]] = []
         for name, (expr, _) in self.variables.items():
             if _is_address(expr):
                 self.addr[name] = int(expr, 16) if isinstance(expr, str) else int(expr)
             else:
-                symbolic.append((name, expr))
+                symbolic.append((name, str(expr)))
         if symbolic:
             gdb_path = Path(gdb) if gdb else find_gdb()
             if gdb_path is None:
@@ -151,7 +169,7 @@ class LiveWatch:
             raise KeyError(f"{name!r} is not in the watch table ({', '.join(self.variables)})")
         return self.addr[name], self.variables[name][1]
 
-    def snapshot(self) -> dict:
+    def snapshot(self) -> dict[str, Value]:
         """Read every variable once in one probe session and return ``{name: value}``."""
         reads = [(self.addr[name], FORMATS[fmt][1]) for name, (_, fmt) in self.variables.items()]
         raw = self.probe.read_mem(reads)
@@ -159,12 +177,12 @@ class LiveWatch:
             name: decode(raw[self.addr[name]], fmt) for name, (_, fmt) in self.variables.items()
         }
 
-    def read(self, name: str):
+    def read(self, name: str) -> Value:
         """Read one variable (one probe session)."""
         addr, fmt = self._entry(name)
         return decode(self.probe.read_mem([(addr, FORMATS[fmt][1])])[addr], fmt)
 
-    def write(self, name: str, value):
+    def write(self, name: str, value: Value) -> Value:
         """Inject ``value`` into one variable while the core runs; return the value read back.
 
         The probe verifies the write by reading the bytes back (``ProbeError`` on a mismatch). The

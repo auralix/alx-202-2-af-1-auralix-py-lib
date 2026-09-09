@@ -29,22 +29,48 @@ is a separate, offline step.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import logging
 import logging.handlers
 import os
-import platform
+import signal
 import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING, Protocol, TypedDict
 
 import serial
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 PID_FILE = "serial_logger.pid"
 LINE_FORMAT = "%(asctime)s.%(msecs)03d [%(levelname)s] %(message)s"
 DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 MARK = "-- "
+
+
+class Port(Protocol):
+    """What the logger needs from the serial port; a pyserial ``Serial`` satisfies it."""
+
+    def read_until(self, expected: bytes = b"\n", /) -> bytes:
+        """Return bytes up to and including ``expected``, or what arrived until the timeout."""
+        ...
+
+    def close(self) -> None:
+        """Close the port."""
+        ...
+
+
+class Status(TypedDict):
+    """What ``status`` reports about the detached logger of one folder."""
+
+    pid: int | None
+    alive: bool
+    log: str
+    last: str
 
 
 class SerialLogger:
@@ -60,7 +86,7 @@ class SerialLogger:
         reconnect_s: float = 5.0,
         retention_days: int = 90,
         idle_flush_s: float = 2.0,
-        serial_factory=serial.Serial,
+        serial_factory: Callable[..., Port] = serial.Serial,
     ):
         self.port = port
         self.baud = int(baud)
@@ -74,7 +100,7 @@ class SerialLogger:
         self.log_path = self.log_dir / f"{self.name}.log"
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
-        self._ser = None
+        self._ser: Port | None = None
         self._logger: logging.Logger | None = None
         self.lines = 0
         self.gaps = 0
@@ -109,11 +135,15 @@ class SerialLogger:
         last_rx = last_beat = time.monotonic()
         try:
             while not self._stop.is_set():
-                if self._ser is None and not self._open_port(logger):
-                    self._stop.wait(self.reconnect_s)
-                    continue
+                ser = self._ser
+                if ser is None:
+                    ser = self._open_port(logger)
+                    if ser is None:
+                        self._stop.wait(self.reconnect_s)
+                        continue
+                    self._ser = ser
                 try:
-                    chunk = self._ser.read_until(b"\n")
+                    chunk = ser.read_until(b"\n")
                 except (serial.SerialException, OSError) as ex:
                     logger.warning("%sport %s lost: %s", MARK, self.port, ex)
                     self.gaps += 1
@@ -157,9 +187,9 @@ class SerialLogger:
         self._logger = logger
         return logger
 
-    def _open_port(self, logger: logging.Logger) -> bool:
+    def _open_port(self, logger: logging.Logger) -> Port | None:
         try:
-            self._ser = self._serial_factory(self.port, self.baud, timeout=1.0)
+            ser: Port = self._serial_factory(self.port, self.baud, timeout=1.0)
         except (serial.SerialException, OSError) as ex:
             if self.gaps == 0 and self.lines == 0:
                 logger.warning(
@@ -170,16 +200,14 @@ class SerialLogger:
                     self.reconnect_s,
                 )
                 self.gaps += 1
-            return False
+            return None
         logger.info("%sport %s open", MARK, self.port)
-        return True
+        return ser
 
     def _close_port(self) -> None:
         if self._ser is not None:
-            try:
+            with contextlib.suppress(Exception):  # closing a dead handle must never raise
                 self._ser.close()
-            except Exception:  # noqa: BLE001 - closing a dead handle must never raise
-                pass
             self._ser = None
 
     def _emit(self, logger: logging.Logger, raw: bytes, partial: bool = False) -> None:
@@ -192,28 +220,27 @@ class SerialLogger:
 
 # -- detached process ------------------------------------------------------------------
 def _pid_alive(pid: int) -> bool:
-    if platform.system() == "Windows":
+    if sys.platform == "win32":
         out = subprocess.run(
-            ["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True, text=True
+            ["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True, text=True, check=False
         ).stdout
         return f" {pid} " in out
-    try:
-        os.kill(pid, 0)
-    except OSError:
-        return False
-    return True
+    else:  # pragma: no cover - POSIX branch, not executed on the Windows bench
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return False
+        return True
 
 
 def _pid_kill(pid: int) -> None:
-    if platform.system() == "Windows":
-        subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True, text=True)
-    else:
-        import signal
-
+    if sys.platform == "win32":
+        subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True, check=False)
+    else:  # pragma: no cover - POSIX branch, not executed on the Windows bench
         os.kill(pid, signal.SIGTERM)
 
 
-def status(log_dir: str | Path) -> dict:
+def status(log_dir: str | Path) -> Status:
     """Return pid, alive flag, log path and the last logged line of the logger in ``log_dir``."""
     log_dir = Path(log_dir)
     pid_path = log_dir / PID_FILE
@@ -227,17 +254,20 @@ def status(log_dir: str | Path) -> dict:
     if log_path.exists():
         lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
         last = lines[-1] if lines else ""
-    return {"pid": pid, "alive": bool(pid) and _pid_alive(pid), "log": str(log_path), "last": last}
+    alive = _pid_alive(pid) if pid else False
+    return Status(pid=pid, alive=alive, log=str(log_path), last=last)
 
 
 def stop_detached(log_dir: str | Path) -> bool:
     """Stop the detached logger of ``log_dir`` (via its PID file); True when one was running."""
     log_dir = Path(log_dir)
     info = status(log_dir)
-    if info["pid"] and info["alive"]:
-        _pid_kill(info["pid"])
+    pid = info["pid"]
+    running = pid is not None and info["alive"]
+    if pid is not None and running:
+        _pid_kill(pid)
     (log_dir / PID_FILE).unlink(missing_ok=True)
-    return bool(info["pid"] and info["alive"])
+    return running
 
 
 def start_detached(
@@ -256,16 +286,22 @@ def start_detached(
         "--port", port, "--baud", str(baud), "--dir", str(log_dir),
         "--heartbeat-s", str(heartbeat_s), "--retention-days", str(retention_days),
     ]  # fmt: skip
-    kwargs = {
-        "stdin": subprocess.DEVNULL,
-        "stdout": subprocess.DEVNULL,
-        "stderr": subprocess.DEVNULL,
-    }
-    if platform.system() == "Windows":
-        kwargs["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
-    else:
-        kwargs["start_new_session"] = True
-    proc = subprocess.Popen(args, **kwargs)
+    if sys.platform == "win32":
+        proc = subprocess.Popen(
+            args,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+        )
+    else:  # pragma: no cover - POSIX branch, not executed on the Windows bench
+        proc = subprocess.Popen(
+            args,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
     (log_dir / PID_FILE).write_text(str(proc.pid))
     time.sleep(1.0)
     if not _pid_alive(proc.pid):
@@ -279,7 +315,7 @@ def start_detached(
 def main(argv: list[str] | None = None) -> int:
     """Command line: start, stop and status manage a detached logger; run is the worker."""
     parser = argparse.ArgumentParser(
-        prog="python -m alx.serial_logger", description=__doc__.split("\n\n")[0]
+        prog="python -m alx.serial_logger", description=(__doc__ or "").split("\n\n")[0]
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
     for cmd in ("start", "run"):
@@ -304,15 +340,17 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "start":
         pid = start_detached(args.port, args.baud, args.dir, args.heartbeat_s, args.retention_days)
-        print(f"serial logger started: pid {pid}, {status(args.dir)['log']}")
+        print(f"serial logger started: pid {pid}, {status(args.dir)['log']}")  # noqa: T201
         return 0
     if args.cmd == "stop":
-        print("stopped" if stop_detached(args.dir) else "no logger was running")
+        print("stopped" if stop_detached(args.dir) else "no logger was running")  # noqa: T201
         return 0
     info = status(args.dir)
-    print(f"pid {info['pid']} alive {info['alive']} log {info['log']}\nlast: {info['last']}")
+    print(  # noqa: T201
+        f"pid {info['pid']} alive {info['alive']} log {info['log']}\nlast: {info['last']}"
+    )
     return 0 if info["alive"] else 1
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover - the detached worker entry
     sys.exit(main())

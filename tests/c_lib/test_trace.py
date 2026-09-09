@@ -7,6 +7,9 @@ Proofs (ALX-1544):
   P66 parse_lines keeps only the trace lines of a mixed transcript (banner, JSON frame, noise)
 """
 
+from hypothesis import given
+from hypothesis import strategies as st
+
 from alx.c_lib.trace import TraceLine, parse_banner, parse_line, parse_lines
 
 BANNER = (
@@ -52,7 +55,22 @@ def test_ALX1544_P66_parse_lines_keeps_only_trace_lines():
     )
     lines = parse_lines(raw)
     assert [ln.level for ln in lines] == ["INF"] * 6 + ["WRN"]
-    assert lines[0].text == "APP START" and lines[-1] == TraceLine(
-        "2000-01-01 00:00:00.200", "WRN", "late"
-    )
+    assert lines[0].text == "APP START"
+    assert lines[-1] == TraceLine("2000-01-01 00:00:00.200", "WRN", "late")
     assert parse_lines(b"") == []
+
+
+@given(
+    ts=st.text(st.characters(codec="ascii", exclude_characters="]\r\n"), max_size=30),
+    level=st.sampled_from(["INF", "WRN", "ERR", "DBG"]),
+    text=st.text(st.characters(codec="ascii", exclude_characters="\r\n"), max_size=60),
+    crlf=st.booleans(),
+)
+def test_ALX1544_P67_property_a_formatted_trace_line_parses_back_to_its_fields(
+    ts, level, text, crlf
+):
+    line = f"[{ts}] [{level}] {text}".encode("ascii") + (b"\r\n" if crlf else b"\n")
+    parsed = parse_line(line)
+    assert parsed is not None
+    assert (parsed.timestamp, parsed.level, parsed.text) == (ts, level, text.rstrip("\r"))
+    assert parse_lines(line * 3) == [parsed] * 3

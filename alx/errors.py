@@ -15,3 +15,7 @@ class ProbeError(AlxError):
 
 class InstrumentError(AlxError):
     """A bench instrument did not answer, answered wrongly, or refused an unsafe request."""
+
+
+class CliError(AlxError):
+    """The device CLI gave no response where one was required (``Cli.command_json``)."""

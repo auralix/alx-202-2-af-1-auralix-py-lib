@@ -23,6 +23,8 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 
 import alx.debug_probe.jlink as jlink_mod
 from alx.debug_probe import ProbeResult
@@ -35,37 +37,41 @@ BLANK16 = "FF " * 15 + "FF"
 
 class FakeCommander:
     def __init__(self, stdout: str = "", returncode: int = 0):
-        self.calls = []  # (argv, script text, timeout)
+        self.calls: list[tuple[list[str], str, float]] = []  # (argv, script text, timeout)
         self.stdout = stdout
         self.returncode = returncode
 
-    def __call__(self, argv, capture_output, text, timeout):
+    def __call__(self, argv, capture_output, text, timeout, check):
         script = Path(argv[argv.index("-CommanderScript") + 1]).read_text(encoding="ascii")
         self.calls.append((argv, script, timeout))
         return subprocess.CompletedProcess(argv, self.returncode, stdout=self.stdout, stderr="")
 
 
+class ProbeMaker:
+    """probe(stdout="", rc=0, **jlink_kwargs) -> (JLink, FakeCommander) with run_dir = tmp_path/run."""
+
+    def __init__(self, tmp_path, monkeypatch):
+        self.tmp_path = tmp_path
+        self.monkeypatch = monkeypatch
+        self.run_dir = tmp_path / "run"
+
+    def __call__(self, stdout="", rc=0, **kw):
+        fc = FakeCommander(stdout, rc)
+        self.monkeypatch.setattr(subprocess, "run", fc)
+        return JLink(self.tmp_path / "tools" / "JLink.exe", MCU, self.run_dir, **kw), fc
+
+
 @pytest.fixture
 def probe(tmp_path, monkeypatch):
-    """make(stdout="", rc=0, **jlink_kwargs) -> (JLink, FakeCommander) with run_dir = tmp_path/run."""
-
-    def make(stdout="", rc=0, **kw):
-        fc = FakeCommander(stdout, rc)
-        monkeypatch.setattr(jlink_mod.subprocess, "run", fc)
-        return JLink(tmp_path / "tools" / "JLink.exe", MCU, tmp_path / "run", **kw), fc
-
-    make.run_dir = tmp_path / "run"
-    return make
+    return ProbeMaker(tmp_path, monkeypatch)
 
 
 def test_ALX1544_P40_reset_runs_commander_with_the_bench_arguments(probe):
     j, fc = probe(stdout="Reset delay: 0 ms\n")
     result = j.reset()
-    assert (
-        isinstance(result, ProbeResult)
-        and result.transcript == "Reset delay: 0 ms\n"
-        and result.read_back == {}
-    )
+    assert isinstance(result, ProbeResult)
+    assert result.transcript == "Reset delay: 0 ms\n"
+    assert result.read_back == {}
     argv, script, timeout = fc.calls[0]
     assert argv[0] == str(j.exe)
     assert argv[1:11] == [
@@ -80,19 +86,21 @@ def test_ALX1544_P40_reset_runs_commander_with_the_bench_arguments(probe):
         "-NoGui",
         "1",
     ]
-    assert argv[11] == "-CommanderScript" and argv[12] == str(probe.run_dir / "reset.jlink")
+    assert argv[11] == "-CommanderScript"
+    assert argv[12] == str(probe.run_dir / "reset.jlink")
     assert script == "connect\nr\ng\nexit\n"
     assert timeout == 30.0
-    assert j.kind == "jlink" and j.mem_while_running is True
+    assert j.kind == "jlink"
+    assert j.mem_while_running is True
 
 
 def test_ALX1544_P41_cannot_connect_or_nonzero_exit_raises(probe):
-    j, fc = probe(stdout="Connecting to target via SWD\nCannot connect to target.\n")
+    j, _fc = probe(stdout="Connecting to target via SWD\nCannot connect to target.\n")
     with pytest.raises(ProbeError, match=r"(?s)reset\.jlink failed \(rc=0\).*Cannot connect") as ex:
         j.reset()
     assert "Cannot connect to target." in str(ex.value)
     assert isinstance(ex.value, RuntimeError), "callers catching RuntimeError keep working"
-    j, fc = probe(stdout="Script processing completed.\n", rc=1)
+    j, _fc = probe(stdout="Script processing completed.\n", rc=1)
     with pytest.raises(ProbeError, match=r"rc=1"):
         j.reset()
 
@@ -138,9 +146,11 @@ def test_ALX1544_P44_program_requires_the_verify_line_unless_verify_is_off(probe
     j, fc = probe(stdout="O.K.\n")
     with pytest.raises(ProbeError, match="not verified"):
         j.program(img, 0x08000000)
-    assert 'loadbin "' in fc.calls[-1][1] and ",0x08000000" in fc.calls[-1][1]
+    assert 'loadbin "' in fc.calls[-1][1]
+    assert ",0x08000000" in fc.calls[-1][1]
     result = j.program(img, 0x08000000, verify=False)
-    assert "verifybin" not in fc.calls[-1][1] and result.transcript == "O.K.\n"
+    assert "verifybin" not in fc.calls[-1][1]
+    assert result.transcript == "O.K.\n"
     assert fc.calls[-1][1] == f'connect\nh\nloadbin "{posix}",0x08000000\nr\ng\nexit\n'
 
 
@@ -157,7 +167,8 @@ def test_ALX1544_P46_read_mem_reads_everything_in_one_session(probe):
     got = j.read_mem([(0x20000010, 1), (0x20000014, 4)])
     assert len(fc.calls) == 1
     assert fc.calls[0][1] == "connect\nmem8 0x20000010, 1\nmem8 0x20000014, 4\nexit\n"
-    assert fc.calls[0][2] == 30.0 and fc.calls[0][0][-1].endswith("mem.jlink")
+    assert fc.calls[0][2] == 30.0
+    assert fc.calls[0][0][-1].endswith("mem.jlink")
     assert got == {0x20000010: b"\x01", 0x20000014: b"\x00\x00\x3c\x41"}
     j.read_mem([(0x20000010, 1)], script_name="ram.jlink")
     assert fc.calls[-1][0][-1].endswith("ram.jlink")
@@ -185,7 +196,7 @@ def test_ALX1544_P47_find_exe_prefers_the_environment_then_the_newest_install(
 
 
 def test_ALX1544_P48_scripts_land_under_run_dir_created_on_demand(probe):
-    j, fc = probe()
+    j, _fc = probe()
     assert not probe.run_dir.exists()
     j.reset()
     j.erase(0, 0xFF)
@@ -198,7 +209,8 @@ def test_ALX1544_P56_serial_number_selects_the_probe(probe):
     j.reset()
     argv = fc.calls[-1][0]
     i = argv.index("-SelectEmuBySN")
-    assert argv[i + 1] == "753000000" and argv[i + 2] == "-autoconnect"
+    assert argv[i + 1] == "753000000"
+    assert argv[i + 2] == "-autoconnect"
     j, fc = probe()
     j.reset()
     assert "-SelectEmuBySN" not in fc.calls[-1][0]
@@ -223,3 +235,15 @@ def test_ALX1544_P58_write_mem_writes_bytes_and_reads_them_back(probe):
     j, fc = probe(stdout="20000010 = 01 00 00\n")
     with pytest.raises(ProbeError, match="write_mem at 0x20000010: read back 010000 != 016900"):
         j.write_mem(0x20000010, b"\x01\x69\x00")
+
+
+@given(
+    addr=st.integers(min_value=0, max_value=0xFFFFFFFF),
+    data=st.binary(min_size=1, max_size=16),
+    noise=st.text(st.characters(codec="ascii", exclude_characters="\r\n"), max_size=20),
+)
+def test_ALX1544_P49_property_parse_mem8_recovers_any_bytes_commander_prints(addr, data, noise):
+    line = f"{addr:08X} = " + " ".join(f"{b:02X}" for b in data)
+    transcript = f"J-Link>mem8 0x{addr:08X}, {len(data)}\n{noise}\n{line}\n\nJ-Link>exit\n"
+    assert JLink.parse_mem8(transcript, addr) == data
+    assert JLink.parse_mem8(transcript, (addr + 0x10) & 0xFFFFFFFF) is None

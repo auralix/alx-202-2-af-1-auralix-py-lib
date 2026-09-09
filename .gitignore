@@ -5,3 +5,11 @@
 __pycache__
 build/
 *.egg-info/
+.venv/
+.nox/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+.coverage.*
+dist/

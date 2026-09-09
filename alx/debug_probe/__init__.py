@@ -8,8 +8,8 @@ adapter implements and opens the adapter the bench is configured for, so a devic
 tool::
 
     probe = debug_probe.open(mcu="EXAMPLE-MCU", run_dir=RUN_DIR)  # kind from ALX_HIL_DEBUG_PROBE
-    probe.program(image, 0x0)                                      # programmer group
-    values = probe.read_mem([(0x20000010, 1)])                     # memory group
+    probe.program(image, 0x0)  # programmer group
+    values = probe.read_mem([(0x20000010, 1)])  # memory group
 
 Contract, implemented by every adapter (``DebugProbe``), by capability group:
 
@@ -41,12 +41,14 @@ path variables of the adapters.
 from __future__ import annotations
 
 import os
-from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from alx.errors import ProbeError
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 ENV_KIND = "ALX_HIL_DEBUG_PROBE"
 ENV_SERIAL = "ALX_HIL_DEBUG_PROBE_SN"
@@ -63,7 +65,20 @@ class ProbeResult:
 
 
 @runtime_checkable
-class DebugProbe(Protocol):
+class MemoryAccess(Protocol):
+    """The memory capability group on its own: what ``alx.fw.live_watch`` needs from a probe."""
+
+    def read_mem(self, reads: Iterable[tuple[int, int]]) -> dict[int, bytes]:
+        """Read every ``(addr, n)`` in one session; return ``{addr: bytes}``."""
+        ...
+
+    def write_mem(self, addr: int, data: bytes) -> ProbeResult:
+        """Write ``data`` at ``addr``; ``read_back[addr]`` holds what was read back."""
+        ...
+
+
+@runtime_checkable
+class DebugProbe(MemoryAccess, Protocol):
     """The method names every adapter provides; see the module docstring for the semantics."""
 
     kind: str
@@ -94,22 +109,14 @@ class DebugProbe(Protocol):
         """Program ``image`` at ``addr``; verify by default; read ``read_back`` bytes back."""
         ...
 
-    def read_mem(self, reads: Iterable[tuple[int, int]]) -> dict[int, bytes]:
-        """Read every ``(addr, n)`` in one session; return ``{addr: bytes}``."""
-        ...
 
-    def write_mem(self, addr: int, data: bytes) -> ProbeResult:
-        """Write ``data`` at ``addr``."""
-        ...
-
-
-def open(
+def open(  # noqa: A001 - the module-level open() of a resource is the stdlib idiom (gzip, shelve, webbrowser)
     mcu: str,
     run_dir: str | Path,
     kind: str | None = None,
     serial: str | None = None,
     exe: str | Path | None = None,
-    **options,
+    **options: Any,
 ) -> DebugProbe:
     """Open the bench's debug probe, bound to the target MCU and the run directory.
 
@@ -120,7 +127,7 @@ def open(
     kind = (kind or os.environ.get(ENV_KIND) or DEFAULT_KIND).lower()
     serial = serial or os.environ.get(ENV_SERIAL) or None
     if kind == "jlink":
-        from alx.debug_probe.jlink import JLink
+        from alx.debug_probe.jlink import JLink  # noqa: PLC0415 - adapters load on demand
 
         exe_path = Path(exe) if exe else JLink.find_exe()
         if exe_path is None:

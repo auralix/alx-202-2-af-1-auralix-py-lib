@@ -18,18 +18,44 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
+from typing import Any, Protocol
+
+from alx.errors import CliError
+
+
+class Wire(Protocol):
+    """What ``Cli`` needs from the transport; a pyserial ``Serial`` with a short timeout fits."""
+
+    def read(self, n: int, /) -> bytes:
+        """Return up to ``n`` bytes, ``b""`` at the read timeout."""
+        ...
+
+    def write(self, data: bytes, /) -> int | None:
+        """Send ``data``."""
+        ...
+
+    def flush(self) -> None:
+        """Wait until the sent bytes left the port."""
+        ...
+
+    def reset_input_buffer(self) -> None:
+        """Drop every received byte."""
+        ...
 
 
 class Cli:
     """One serial CLI session over an open pyserial port (read timeout ~0.05 s; readers poll)."""
 
-    def __init__(self, ser, log_path: str | Path):
+    def __init__(self, ser: Wire, log_path: str | Path):
         self.ser = ser
         self._t0 = time.monotonic()
-        self._log = open(log_path, "a", encoding="utf-8")
+        # the wire log lives as long as the session; close() closes it
+        self._log = Path(log_path).open("a", encoding="utf-8")  # noqa: SIM115
         self.latencies_ms: list[float] = []  # round-trip times of framed commands (for the report)
         self._pending = b""  # bytes received beyond the last frame (pipelined responses)
-        self.identity: dict = {}  # filled by the session owner (e.g. the parsed boot banner)
+        self.identity: dict[
+            str, str
+        ] = {}  # filled by the session owner (e.g. the parsed boot banner)
         self.trace_rx = bytearray()  # trace bytes read_json skipped; take_trace() hands them over
 
     # -- raw wire ---------------------------------------------------------------------
@@ -150,11 +176,13 @@ class Cli:
             self.latencies_ms.append((time.monotonic() - t0) * 1000.0)
         return resp
 
-    def command_json(self, line: bytes, total_s: float = 2.0) -> dict:
-        """Send one line and return the parsed JSON response; asserts that a response came."""
+    def command_json(self, line: bytes, total_s: float = 2.0) -> dict[str, Any]:
+        """Send one line and return the parsed JSON response; ``CliError`` when none came."""
         raw = self.command(line, total_s=total_s)
-        assert raw, f"no response to {line!r}"
-        return json.loads(raw.replace(b"\r\n", b"").decode("ascii"))
+        if not raw:
+            raise CliError(f"no response to {line!r}")
+        data: dict[str, Any] = json.loads(raw.replace(b"\r\n", b"").decode("ascii"))
+        return data
 
     def expect_silence(self, line: bytes, quiet_s: float = 0.3) -> bytes:
         """Send a line that must produce no response; return whatever came (``b""`` is good)."""
@@ -167,53 +195,54 @@ class Cli:
     def _ascii(text: str | bytes) -> bytes:
         return text.encode("ascii") if isinstance(text, str) else text
 
-    def _cmd(self, name: str, term: bytes = b"\r") -> dict:
+    def _cmd(self, name: str, term: bytes = b"\r") -> dict[str, Any]:
         return self.command_json(name.encode("ascii") + term)
 
-    def help(self) -> dict:
+    def help(self) -> dict[str, Any]:
         """Send ``help`` and return the parsed response (the command list, always pretty)."""
         return self._cmd("help")
 
-    def reset(self) -> dict:
+    def reset(self) -> dict[str, Any]:
         """Send ``reset`` and return its response; the device then reboots (banner follows)."""
         return self._cmd("reset")
 
-    def id(self) -> dict:
+    def id(self) -> dict[str, Any]:
         """Send ``id`` and return the parsed response."""
         return self._cmd("id")
 
-    def get(self) -> dict:
+    def get(self) -> dict[str, Any]:
         """Send ``get`` (every item) and return the parsed response."""
         return self._cmd("get")
 
-    def get_param(self) -> dict:
+    def get_param(self) -> dict[str, Any]:
         """Send ``get-param`` and return the parsed response (``status`` + ``data``)."""
         return self._cmd("get-param")
 
-    def get_var(self) -> dict:
+    def get_var(self) -> dict[str, Any]:
         """Send ``get-var`` and return the parsed response."""
         return self._cmd("get-var")
 
-    def get_flag(self) -> dict:
+    def get_flag(self) -> dict[str, Any]:
         """Send ``get-flag`` and return the parsed response."""
         return self._cmd("get-flag")
 
-    def get_const(self) -> dict:
+    def get_const(self) -> dict[str, Any]:
         """Send ``get-const`` and return the parsed response."""
         return self._cmd("get-const")
 
-    def get_trig(self) -> dict:
+    def get_trig(self) -> dict[str, Any]:
         """Send ``get-trig`` and return the parsed response."""
         return self._cmd("get-trig")
 
-    def set_param(self, key: str | bytes, val: str | bytes, term: bytes = b"\r") -> dict:
+    def set_param(self, key: str | bytes, val: str | bytes, term: bytes = b"\r") -> dict[str, Any]:
         """Send ``set-param --key <key> --val <val>`` and return the parsed response."""
         line = b"set-param --key " + self._ascii(key) + b" --val " + self._ascii(val) + term
         return self.command_json(line)
 
-    def get_params(self) -> dict:
+    def get_params(self) -> dict[str, Any]:
         """Send ``get-param`` and return only its ``data`` object (the shortcut tests use most)."""
-        return self.get_param()["data"]
+        data: dict[str, Any] = self.get_param()["data"]
+        return data
 
     def sync(self) -> None:
         """Sync both ends: a bare terminator flushes the device line buffer, then RX is drained."""

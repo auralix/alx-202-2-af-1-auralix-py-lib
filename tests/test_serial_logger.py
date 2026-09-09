@@ -16,9 +16,15 @@ Proofs (ALX-1544):
   P88 main(): run drives SerialLogger.run, status exits non-zero when nothing runs
   P89 the log file is named after the folder
   P90 a detached logger that dies at start raises and leaves no PID file
+  P91 _pid_alive / _pid_kill drive the Windows process tools (tasklist filter, taskkill /F)
+  P92 main(): start reports the PID and the log path
+  P93 a port that never opens is logged with the retry period; stop() is idempotent
+  P94 a partial line still pending at stop is flushed as "(partial)"
 """
 
 import re
+import subprocess
+import sys
 import time
 
 import pytest
@@ -51,20 +57,24 @@ class FakePort:
         self.closed = True
 
 
-def make_factory(ports):
-    queue = list(ports)
-    opened = []
+class Factory:
+    """Hands out the scripted ports in order ("NOPORT" refuses to open); records what it opened."""
 
-    def factory(port, baud, timeout):
+    def __init__(self, ports):
+        self.queue = list(ports)
+        self.opened: list[FakePort] = []
+
+    def __call__(self, port, baud, timeout):
         assert timeout == 1.0
-        item = queue.pop(0) if queue else FakePort([])
+        item = self.queue.pop(0) if self.queue else FakePort([])
         if item == "NOPORT":
             raise serial.SerialException("could not open port")
-        opened.append(item)
+        self.opened.append(item)
         return item
 
-    factory.opened = opened
-    return factory
+
+def make_factory(ports):
+    return Factory(ports)
 
 
 def run_logger(tmp_path, ports, run_s=0.3, **kw):
@@ -84,18 +94,20 @@ def test_ALX1544_P80_lines_are_timestamped_and_bracketed_by_marks(tmp_path):
     assert all(re.match(STAMP, ln) for ln in lines), lines
     assert "-- start: port FAKE1, 115200 baud" in lines[0]
     assert "-- port FAKE1 open" in lines[1]
-    assert lines[2].endswith("] boot") and lines[3].endswith("] line two")
+    assert lines[2].endswith("] boot")
+    assert lines[3].endswith("] line two")
     assert lines[-1].endswith("-- stop: 2 lines, 0 port gaps")
-    assert logger.lines == 2 and logger.gaps == 0
+    assert logger.lines == 2
+    assert logger.gaps == 0
 
 
 def test_ALX1544_P81_partial_line_is_flushed_after_idle(tmp_path):
-    logger, text = run_logger(tmp_path, [FakePort([b"no newline"])], idle_flush_s=0.05)
+    _logger, text = run_logger(tmp_path, [FakePort([b"no newline"])], idle_flush_s=0.05)
     assert "] (partial) no newline" in text
 
 
 def test_ALX1544_P82_silence_produces_heartbeats(tmp_path):
-    logger, text = run_logger(tmp_path, [FakePort([])], run_s=0.3, heartbeat_s=0.05)
+    _logger, text = run_logger(tmp_path, [FakePort([])], run_s=0.3, heartbeat_s=0.05)
     beats = [ln for ln in text.splitlines() if "-- heartbeat: no data for" in ln]
     assert len(beats) >= 2, text
 
@@ -105,15 +117,19 @@ def test_ALX1544_P83_lost_port_is_logged_reopened_and_counted(tmp_path):
     logger, text = run_logger(tmp_path, [first, second], reconnect_s=0.02)
     assert "-- port FAKE1 lost: device gone" in text
     assert text.count("-- port FAKE1 open") == 2
-    assert "] a" in text and "] b" in text
-    assert first.closed and logger.gaps == 1 and logger.lines == 2
+    assert "] a" in text
+    assert "] b" in text
+    assert first.closed
+    assert logger.gaps == 1
+    assert logger.lines == 2
 
 
 def test_ALX1544_P84_unopenable_port_is_retried(tmp_path):
     port = FakePort([b"x\r\n"])
-    logger, text = run_logger(tmp_path, ["NOPORT", "NOPORT", port], reconnect_s=0.02)
+    _logger, text = run_logger(tmp_path, ["NOPORT", "NOPORT", port], reconnect_s=0.02)
     assert text.count("-- port FAKE1 not open") == 1, "the retry is announced once, not every 20 ms"
-    assert "-- port FAKE1 open" in text and "] x" in text
+    assert "-- port FAKE1 open" in text
+    assert "] x" in text
 
 
 def test_ALX1544_P85_stop_closes_the_port_and_writes_the_counters(tmp_path):
@@ -125,14 +141,14 @@ def test_ALX1544_P85_stop_closes_the_port_and_writes_the_counters(tmp_path):
 
 
 def test_ALX1544_P86_undecodable_bytes_are_replaced(tmp_path):
-    logger, text = run_logger(tmp_path, [FakePort([b"caf\xe9\r\n"])])
+    _logger, text = run_logger(tmp_path, [FakePort([b"caf\xe9\r\n"])])
     assert "] caf\ufffd" in text
 
 
 def test_ALX1544_P87_detached_lifecycle_pid_file_status_stop(tmp_path, monkeypatch):
     log_dir = tmp_path / "soak"
     popen_calls = []
-    killed = []
+    killed: list[int] = []
     alive = {"value": True}
 
     class FakeProc:
@@ -142,13 +158,14 @@ def test_ALX1544_P87_detached_lifecycle_pid_file_status_stop(tmp_path, monkeypat
         popen_calls.append((args, kwargs))
         return FakeProc()
 
-    monkeypatch.setattr(sl.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
     monkeypatch.setattr(sl, "_pid_alive", lambda pid: alive["value"] and pid == 4242)
-    monkeypatch.setattr(sl, "_pid_kill", lambda pid: killed.append(pid))
-    monkeypatch.setattr(sl.time, "sleep", lambda s: None)
+    monkeypatch.setattr(sl, "_pid_kill", killed.append)
+    monkeypatch.setattr(time, "sleep", lambda s: None)
 
     pid = sl.start_detached("FAKE1", 115200, log_dir, heartbeat_s=30.0, retention_days=7)
-    assert pid == 4242 and (log_dir / "serial_logger.pid").read_text() == "4242"
+    assert pid == 4242
+    assert (log_dir / "serial_logger.pid").read_text() == "4242"
     args, kwargs = popen_calls[0]
     assert args[1:4] == ["-m", "alx.serial_logger", "run"]
     assert args[4:] == [
@@ -163,7 +180,8 @@ def test_ALX1544_P87_detached_lifecycle_pid_file_status_stop(tmp_path, monkeypat
         "--retention-days",
         "7",
     ]
-    assert kwargs["stdin"] is sl.subprocess.DEVNULL and kwargs["stdout"] is sl.subprocess.DEVNULL
+    assert kwargs["stdin"] is subprocess.DEVNULL
+    assert kwargs["stdout"] is subprocess.DEVNULL
 
     (log_dir / "soak.log").write_text(
         "2026-01-01 00:00:00.000 [INFO] last line\n", encoding="utf-8"
@@ -179,13 +197,14 @@ def test_ALX1544_P87_detached_lifecycle_pid_file_status_stop(tmp_path, monkeypat
     sl.start_detached("FAKE1", 115200, log_dir)
     assert killed == [4242], "a second start stops the running logger first (one owner per port)"
 
-    assert sl.stop_detached(log_dir) is True and killed == [4242, 4242]
+    assert sl.stop_detached(log_dir) is True
+    assert killed == [4242, 4242]
     assert not (log_dir / "serial_logger.pid").exists()
     assert sl.stop_detached(log_dir) is False
 
 
 def test_ALX1544_P88_main_run_and_status(tmp_path, monkeypatch, capsys):
-    ran = {}
+    ran: dict[str, object] = {}
 
     def fake_run(self):
         ran.update(
@@ -235,10 +254,70 @@ def test_ALX1544_P90_detached_logger_dying_at_start_raises_and_cleans_up(tmp_pat
     class FakeProc:
         pid = 99
 
-    monkeypatch.setattr(sl.subprocess, "Popen", lambda args, **kw: FakeProc())
+    monkeypatch.setattr(subprocess, "Popen", lambda args, **kw: FakeProc())
     monkeypatch.setattr(sl, "_pid_alive", lambda pid: False)
     monkeypatch.setattr(sl, "_pid_kill", lambda pid: None)
-    monkeypatch.setattr(sl.time, "sleep", lambda s: None)
+    monkeypatch.setattr(time, "sleep", lambda s: None)
     with pytest.raises(RuntimeError, match="died at start"):
         sl.start_detached("FAKE1", 115200, tmp_path / "soak")
     assert not (tmp_path / "soak" / "serial_logger.pid").exists()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the Windows process tools")
+def test_ALX1544_P91_pid_alive_and_kill_use_the_windows_process_tools(monkeypatch):
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        out = "python.exe    4242 Console   1   20,000 K\n" if cmd[0] == "tasklist" else ""
+        return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert sl._pid_alive(4242) is True
+    assert sl._pid_alive(4243) is False
+    assert calls[0][:3] == ["tasklist", "/FI", "PID eq 4242"]
+    sl._pid_kill(4242)
+    assert calls[-1] == ["taskkill", "/PID", "4242", "/F"]
+
+
+def test_ALX1544_P92_main_start_reports_pid_and_log(tmp_path, monkeypatch, capsys):
+    seen: dict[str, object] = {}
+
+    def fake_start(port, baud, log_dir, heartbeat_s, retention_days):
+        seen.update(port=port, baud=baud, dir=str(log_dir), hb=heartbeat_s, keep=retention_days)
+        return 777
+
+    monkeypatch.setattr(sl, "start_detached", fake_start)
+    soak = tmp_path / "soak"
+    argv = [
+        "start",
+        "--port",
+        "FAKE1",
+        "--dir",
+        str(soak),
+        "--heartbeat-s",
+        "30",
+        "--retention-days",
+        "7",
+    ]
+    assert sl.main(argv) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("serial logger started: pid 777, ")
+    assert out.rstrip().endswith("soak.log")
+    assert seen == {"port": "FAKE1", "baud": 115200, "dir": str(soak), "hb": 30.0, "keep": 7}
+
+
+def test_ALX1544_P93_a_port_that_never_opens_is_logged_and_stop_is_idempotent(tmp_path):
+    logger, text = run_logger(tmp_path, ["NOPORT"] * 50, run_s=0.15, reconnect_s=0.02)
+    lines = text.splitlines()
+    assert re.match(STAMP + r"-- start: port FAKE1", lines[0])
+    assert any("port FAKE1 not open" in ln and "retrying every 0 s" in ln for ln in lines)
+    assert lines[-1].endswith("-- stop: 0 lines, 1 port gaps")
+    assert logger.gaps == 1, "failed opens count as one gap until the port appears"
+    logger.stop()  # a second stop is a no-op
+
+
+def test_ALX1544_P94_a_partial_line_pending_at_stop_is_flushed(tmp_path):
+    _, text = run_logger(tmp_path, [FakePort([b"no newline yet"])], run_s=0.15, idle_flush_s=10.0)
+    assert "(partial) no newline yet" in text
+    assert text.splitlines()[-1].endswith("-- stop: 1 lines, 0 port gaps")

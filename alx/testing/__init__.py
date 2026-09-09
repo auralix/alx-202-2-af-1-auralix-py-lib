@@ -11,10 +11,12 @@
 
 Load from a suite's ``conftest.py``, one of two ways::
 
-    pytest_plugins = ("alx.testing",)           # when the conftest does not import alx.testing
+    pytest_plugins = ("alx.testing",)  # when the conftest does not import alx.testing
 
-    from alx import testing                     # when it does (for run_dir, git_head):
-    def pytest_configure(config):               # register the imported module; loading it by
+    from alx import testing  # when it does (for run_dir, git_head):
+
+
+    def pytest_configure(config):  # register the imported module; loading it by
         config.pluginmanager.register(testing, "alx.testing")  # name afterwards = rewrite warning
 
 Nothing here touches hardware or firmware; host suites and bench suites use it alike.
@@ -27,11 +29,15 @@ import re
 import subprocess
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import pytest
 
 PROOF_RE = re.compile(r"ALX(\d+)_P(\d+)")
 
 
-def pytest_collection_modifyitems(items) -> None:
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     """Mirror the proof token of every test name and every ``req`` marker into junit properties."""
     for item in items:
         match = PROOF_RE.search(item.name)
@@ -52,7 +58,7 @@ def git_head(path: str | Path) -> str:
             check=True,
         )
         return result.stdout.strip()
-    except Exception:  # pragma: no cover
+    except (OSError, subprocess.CalledProcessError):  # git missing, or not a repository
         return "?"
 
 

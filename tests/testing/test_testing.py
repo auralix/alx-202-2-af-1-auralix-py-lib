@@ -10,6 +10,7 @@ Proofs (ALX-1544):
 
 import re
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -33,7 +34,7 @@ class _Item:
 
 
 def test_ALX1544_P61_hook_mirrors_proof_token_and_req_markers():
-    items = [
+    items: list[Any] = [
         _Item("test_ALX1544_P61_hook", reqs=[("ALX-1600-P3",), ("ALX-1601-P1", "ALX-1601-P2")]),
         _Item("test_plain_name"),
         _Item("test_ALX1234_P20_soak[CR]"),

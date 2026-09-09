@@ -2,6 +2,7 @@
 # Device repos pin this repo as a git submodule and put its root on pytest's pythonpath, or install it:
 #   pip install -e <path-to-this-repo>
 # Offline tests (no instrument, no target):  python -m pytest
+# Verification lanes (tests/README.md):       nox -l
 [build-system]
 requires = ["setuptools>=77"]                # >= 77: PEP 639 license expression + license-files
 build-backend = "setuptools.build_meta"
@@ -9,7 +10,8 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "alx-202-2-af-1-auralix-py-lib"
 version = "0.1.0"
-description = "Auralix Python Library - debug probe, bench instruments, serial CLI client, firmware RAM view, soak logger, pytest HIL helpers"
+description = "Auralix Python Library - debug probe, bench instruments, serial CLI client, firmware live watch, soak logger, pytest evidence helpers"
+readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -18,15 +20,31 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-test = [
+test = [                                     # TEST - HOST lane (and every lane that re-runs the suite)
     "pytest>=8",
     "pytest-html>=4",
     "pytest-timeout>=2",
-    "ruff>=0.5",
+    "pytest-randomly>=4",
+    "hypothesis>=6",
+]
+dev = [                                      # every lane: nox installs .[dev] into each session
+    "alx-202-2-af-1-auralix-py-lib[test]",
+    "ruff>=0.5",                             # ANALYZE stage 0: format + lint (PEP 8 / 257, security rules)
+    "codespell>=2",                          # ANALYZE stage 0: spelling
+    "mypy>=1.10",                            # ANALYZE stage 1: types (PEP 484, strict)
+    "types-pyserial",
+    "pip-audit>=2",                          # ANALYZE stage 2: dependency vulnerabilities
+    "coverage[toml]>=7",                     # COVERAGE
+    "pytest-cov>=5",
+    "universalmutator>=1.14",                # MUTATE (same generator as the C library)
+    "build>=1",                              # BUILD: sdist + wheel
+    "twine>=5",                              # BUILD: metadata check
+    "check-wheel-contents>=0.6",             # BUILD: wheel content check
+    "nox>=2024",                             # the lane runner
 ]
 
 [tool.setuptools]
-packages = ["alx", "alx.debug_probe", "alx.psu", "alx.c_lib", "alx.fw", "alx.testing"]
+packages = ["alx", "alx.debug_probe", "alx.psu", "alx.c_lib", "alx.fw", "alx.testing", "alx.verify"]
 
 [tool.pytest.ini_options]
 minversion = "8.0"
@@ -43,21 +61,77 @@ filterwarnings = [
     "error",
 ]
 
-# Style = PEP 8 / PEP 257 / PEP 484, enforced by ruff (tests/test_ruff.py runs `ruff check` and `ruff format --check`).
+# ANALYZE stage 0 - style = PEP 8 / PEP 257 / PEP 484 plus the bug, security and pytest rule families.
 [tool.ruff]
 line-length = 100
 target-version = "py310"
 extend-exclude = ["build"]
 
 [tool.ruff.lint]
-select = ["E", "W", "F", "I", "N", "UP", "B", "D"]
-ignore = ["D107"]                       # __init__ documented in the class docstring
+select = [
+    "E", "W", "F", "I", "N", "UP", "B", "D",           # pycodestyle, pyflakes, isort, naming, pyupgrade, bugbear, docstrings
+    "S", "BLE", "A", "T20", "ERA", "EXE",              # security (bandit), blind except, builtins, print, dead code, shebang
+    "SIM", "C4", "PIE", "RET", "RUF", "PERF", "FURB",  # simplify, comprehensions, misc, returns, ruff, performance, refurb
+    "PT", "ARG", "PTH", "TC", "LOG", "G", "DTZ", "ICN",  # pytest style, unused args, pathlib, typing imports, logging, datetime, import names
+    "PLE", "PLW", "PLC",                               # pylint errors, warnings, conventions (no complexity metrics)
+]
+ignore = [
+    "D107",     # __init__ documented in the class docstring
+    "S603",     # subprocess without shell=True: the library runs bench tools (git, gdb, JLink, tasklist) by argv
+    "S607",     # tools by bare name: PATH is bench configuration (ALX_HIL_* variables where a path is needed)
+    "PERF203",  # try/except inside the logger loop is the point: a lost port must not end the loop
+    "RET505",   # if/else after a return stays: mypy narrows sys.platform branches only in that form
+]
 
 [tool.ruff.lint.pydocstyle]
 convention = "pep257"
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["D", "N802", "E501"]       # proof-token test names (test_ALX1544_P1_...), no docstring duty, long asserts
+"tests/*" = ["D", "N802", "E501", "S101", "ARG"]   # proof-token test names, no docstring duty, long asserts, assert, fakes' unused args
 
 [tool.ruff.format]
 quote-style = "double"
+docstring-code-format = true
+
+# ANALYZE stage 0 - spelling (codespell)
+[tool.codespell]
+skip = "./.venv,./.nox,./build,./uv.lock,./.git,./.mypy_cache,./.ruff_cache,./.hypothesis"
+ignore-words-list = "ser,caf"                # ser = the serial port variable; caf = test bytes
+
+# ANALYZE stage 1 - types (mypy, strict on the package; tests are checked but need no annotations)
+[tool.mypy]
+python_version = "3.10"
+files = ["alx", "tests", "noxfile.py"]
+strict = true
+warn_unreachable = true
+enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+disallow_untyped_calls = false
+check_untyped_defs = true
+
+# COVERAGE - branch coverage of the package; gate in tests/coverage_gate.py, evidence under build/cov/
+[tool.coverage.run]
+source = ["alx"]
+branch = true
+data_file = "build/cov/.coverage"
+
+[tool.coverage.report]
+show_missing = true
+precision = 1
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "^\\s*\\.\\.\\.$",                       # Protocol method stubs
+]
+
+[tool.coverage.xml]
+output = "build/cov/coverage.xml"
+
+[tool.coverage.html]
+directory = "build/cov/html"
+
+[tool.coverage.json]
+output = "build/cov/coverage.json"

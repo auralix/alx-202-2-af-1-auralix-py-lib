@@ -16,7 +16,7 @@ from dataclasses import dataclass
 BANNER_RE = re.compile(
     rb"FW Started:.*?- FW Name: (?P<name>\S+).*?- FW Version: (?P<ver>\S+)"
     rb".*?- FW Bin: (?P<bin>\S+\.bin)",
-    re.S,
+    re.DOTALL,
 )
 LINE_RE = re.compile(rb"^\[(?P<ts>[^\]]*)\] \[(?P<level>[A-Z]{3})\] ?(?P<text>.*?)\r?$")
 
@@ -30,7 +30,7 @@ class TraceLine:
     text: str
 
 
-def parse_banner(raw: bytes) -> dict:
+def parse_banner(raw: bytes) -> dict[str, str]:
     """Extract name, version, bin and 7-char build hash from a boot transcript, ``{}`` if none.
 
     The firmware traces ``- FW Name: X``, ``- FW Version: <maj.min.patch.date.fullhash>`` and
@@ -39,7 +39,7 @@ def parse_banner(raw: bytes) -> dict:
     match = BANNER_RE.search(raw)
     if not match:
         return {}
-    ident = {k: v.decode("ascii", "replace") for k, v in match.groupdict().items()}
+    ident: dict[str, str] = {k: v.decode("ascii", "replace") for k, v in match.groupdict().items()}
     ident["hash7"] = ident["bin"].rsplit("_", 1)[-1].removesuffix(".bin")
     return ident
 

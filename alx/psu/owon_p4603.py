@@ -54,18 +54,46 @@ profile, the check belongs here.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import time
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Protocol
 
 import serial
 
 from alx.errors import InstrumentError
 
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
 log = logging.getLogger(__name__)
 
 CRLF = b"\r\n"
 KEYWORDS = ("MIN", "MAX", "DEF")
+
+
+class Port(Protocol):
+    """What the driver needs from the serial port; a pyserial ``Serial`` satisfies it."""
+
+    dtr: bool
+    rts: bool
+
+    def write(self, data: bytes, /) -> int | None:
+        """Send ``data``."""
+        ...
+
+    def readline(self) -> bytes:
+        """Return one line or ``b""`` at the port timeout."""
+        ...
+
+    def reset_input_buffer(self) -> None:
+        """Drop every received byte."""
+        ...
+
+    def close(self) -> None:
+        """Close the port."""
+        ...
 
 
 @dataclass(frozen=True)
@@ -146,7 +174,7 @@ class OwonP4603:
         settle_s: float = 0.25,
         name: str = "PSU",
         limits: Limits | None = None,
-        serial_factory=serial.Serial,
+        serial_factory: Callable[..., Port] = serial.Serial,
     ):
         self.port = port
         self.name = name  # role name in the log (one supply per role: "PSU", "INPUT", ...)
@@ -154,7 +182,7 @@ class OwonP4603:
         self.retry_wait_s = retry_wait_s
         self.settle_s = settle_s
         self.limits = limits or Limits()
-        self.ser = serial_factory(
+        self.ser: Port = serial_factory(
             port,
             baud,
             bytesize=8,
@@ -414,10 +442,10 @@ class OwonP4603:
 
     def wait_output_decay(
         self, below_v: float = 1.0, timeout_s: float = 10.0, period_s: float = 0.05
-    ) -> list:
+    ) -> list[tuple[float, float]]:
         """Poll ``MEAS:VOLT?`` after output_off until below ``below_v``; return (t, v) samples."""
         t0 = time.monotonic()
-        samples = []
+        samples: list[tuple[float, float]] = []
         while True:
             v = self.measure_v()
             t = time.monotonic() - t0
@@ -428,7 +456,5 @@ class OwonP4603:
 
     def close(self) -> None:
         """Close the serial port; never raises."""
-        try:
+        with contextlib.suppress(Exception):  # closing a dead handle must never raise
             self.ser.close()
-        except Exception:  # noqa: BLE001 - closing a dead handle must never raise
-            pass

@@ -33,11 +33,13 @@ Proofs (ALX-1544):
   P23 Identity.parse tolerates a short string
 """
 
+import itertools
 import logging
+import re
+import time
 
 import pytest
 
-import alx.psu.owon_p4603 as owon
 from alx.errors import InstrumentError
 from alx.psu.owon_p4603 import Identity, Limits, OwonP4603, State
 
@@ -50,7 +52,7 @@ class FakeOwon:
 
     def __init__(
         self,
-        idn=IDN,
+        idn: str = IDN,
         v=24.0,
         i=3.0,
         ovp=30.0,
@@ -68,7 +70,7 @@ class FakeOwon:
             k: list(v) for k, v in (scripted or {}).items()
         }  # cmd -> raw answers first
         self.ignore_sets = tuple(ignore_sets)  # set commands the stubborn unit ignores
-        self.writes = []
+        self.writes: list[bytes] = []
         self._rx = b""
         self.is_open = True
         self.dtr = True
@@ -88,7 +90,7 @@ class FakeOwon:
 
     def _num(self, text, hw_max, default):
         return (
-            {"MIN": 0.0, "MAX": hw_max, "DEF": default}.get(text.upper(), None)
+            {"MIN": 0.0, "MAX": hw_max, "DEF": default}.get(text.upper())
             if text.isalpha()
             else float(text)
         )
@@ -145,35 +147,38 @@ class FakeOwon:
         self.is_open = False
 
 
-def cmds(fake: FakeOwon) -> list:
+def cmds(fake: FakeOwon) -> list[str]:
     return [w.decode("ascii").strip() for w in fake.writes]
 
 
-def writes_only(fake: FakeOwon) -> list:
+def writes_only(fake: FakeOwon) -> list[str]:
     """The non-query commands that hit the wire."""
     return [c for c in cmds(fake) if not c.endswith("?")]
 
 
-@pytest.fixture
-def bench(monkeypatch):
-    """make(fake=None, **driver_kwargs) -> (OwonP4603, FakeOwon); sleeps and the open() kwargs are recorded."""
-    sleeps = []
-    opened = {}
-    monkeypatch.setattr(owon.time, "sleep", lambda s: sleeps.append(s))
+class Bench:
+    """bench(fake=None, **driver_kwargs) -> (OwonP4603, FakeOwon); sleeps and the open() kwargs are recorded."""
 
-    def make(fake=None, **kw):
+    def __init__(self):
+        self.sleeps: list[float] = []
+        self.opened: dict[str, object] = {}
+
+    def __call__(self, fake=None, **kw):
         fake = fake if fake is not None else FakeOwon()
 
         def factory(port, baud, **kwargs):
-            opened.clear()
-            opened.update(port=port, baud=baud, **kwargs)
+            self.opened.clear()
+            self.opened.update(port=port, baud=baud, **kwargs)
             return fake
 
         return OwonP4603("FAKE1", serial_factory=factory, **kw), fake
 
-    make.sleeps = sleeps
-    make.opened = opened
-    return make
+
+@pytest.fixture
+def bench(monkeypatch):
+    made = Bench()
+    monkeypatch.setattr(time, "sleep", made.sleeps.append)
+    return made
 
 
 def test_ALX1544_P1_identity_is_read_and_parsed_and_a_foreign_instrument_is_refused(bench):
@@ -184,26 +189,31 @@ def test_ALX1544_P1_identity_is_read_and_parsed_and_a_foreign_instrument_is_refu
     foreign = FakeOwon(idn="ACME,PSU9000,1,1.0")
     with pytest.raises(InstrumentError, match="not an OWON P4603"):
         bench(foreign)
-    assert foreign.is_open is False and writes_only(foreign) == []
+    assert foreign.is_open is False
+    assert writes_only(foreign) == []
 
 
 def test_ALX1544_P2_port_is_opened_8_data_bits_flow_control_off_dtr_rts_low(bench):
     psu, fake = bench()
     o = bench.opened
-    assert o["port"] == "FAKE1" and o["baud"] == 115200 and o["bytesize"] == 8
-    assert o["parity"] == "N" and o["stopbits"] == 1
-    assert o["dsrdtr"] is False and o["rtscts"] is False
-    assert o["timeout"] == 5.0 and o["write_timeout"] == 5.0
-    assert fake.dtr is False and fake.rts is False
+    assert o["port"] == "FAKE1"
+    assert o["baud"] == 115200
+    assert o["bytesize"] == 8
+    assert o["parity"] == "N"
+    assert o["stopbits"] == 1
+    assert o["dsrdtr"] is False
+    assert o["rtscts"] is False
+    assert o["timeout"] == 5.0
+    assert o["write_timeout"] == 5.0
+    assert fake.dtr is False
+    assert fake.rts is False
     psu.close()
     assert fake.is_open is False
     psu.close()  # idempotent
     bench(FakeOwon(), baud=9600, parity="E", stopbits=2)
-    assert (
-        bench.opened["baud"] == 9600
-        and bench.opened["parity"] == "E"
-        and bench.opened["stopbits"] == 2
-    )
+    assert bench.opened["baud"] == 9600
+    assert bench.opened["parity"] == "E"
+    assert bench.opened["stopbits"] == 2
 
 
 def test_ALX1544_P3_query_survives_empty_answers_up_to_tries(bench):
@@ -222,15 +232,16 @@ def test_ALX1544_P4_output_on_refuses_without_any_declared_setpoint_policy(bench
         psu.output_on()
     with pytest.raises(InstrumentError, match="no expect_v or v_max declared"):
         psu.output_on_nowait()
-    assert writes_only(fake) == [] and fake.on is False
+    assert writes_only(fake) == []
+    assert not fake.on
 
 
 @pytest.mark.parametrize(
-    "fake_kw,reason",
+    ("fake_kw", "reason"),
     [
-        (dict(v=5.0), "setpoint is 5.0 V, expected 24.0 V"),
-        (dict(v=24.2), "setpoint is 24.2 V"),
-        (dict(ovp=40.0), "OVP is 40.0 V, above expect_ovp_max 30.0 V"),
+        ({"v": 5.0}, "setpoint is 5.0 V, expected 24.0 V"),
+        ({"v": 24.2}, "setpoint is 24.2 V"),
+        ({"ovp": 40.0}, "OVP is 40.0 V, above expect_ovp_max 30.0 V"),
     ],
     ids=["wrong-volts", "outside-tolerance", "ovp-too-high"],
 )
@@ -238,13 +249,14 @@ def test_ALX1544_P5_expect_v_policy_refuses_a_wrong_bench_setting(bench, fake_kw
     psu, fake = bench(FakeOwon(**fake_kw), limits=FIXED)
     with pytest.raises(InstrumentError, match=reason):
         psu.output_on()
-    assert writes_only(fake) == [] and fake.on is False
+    assert writes_only(fake) == []
+    assert not fake.on
 
 
 def test_ALX1544_P5_expect_v_policy_accepts_a_setpoint_inside_the_tolerance(bench):
     psu, fake = bench(FakeOwon(v=24.05), limits=FIXED)
     psu.output_on()
-    assert fake.on is True
+    assert fake.on
 
 
 def test_ALX1544_P6_output_on_writes_outp_on_and_confirms(bench, caplog):
@@ -255,7 +267,8 @@ def test_ALX1544_P6_output_on_writes_outp_on_and_confirms(bench, caplog):
     i = seq.index("OUTP ON")
     assert seq[i + 1] == "OUTP?", "the switch is confirmed by reading the output state back"
     assert seq.count("OUTP ON") == 1
-    assert fake.on is True and psu.output_is_on() is True
+    assert fake.on
+    assert psu.output_is_on() is True
     assert caplog.messages == ["SUPPLY output ON"]
     assert psu.settle_s in bench.sleeps
 
@@ -263,7 +276,8 @@ def test_ALX1544_P6_output_on_writes_outp_on_and_confirms(bench, caplog):
 def test_ALX1544_P7_output_off_confirms_and_an_unconfirmed_switch_raises_after_tries(bench):
     psu, fake = bench(FakeOwon(on=True))
     psu.output_off()  # OFF needs no declared limits (the safe direction)
-    assert fake.on is False and psu.output_is_on() is False
+    assert not fake.on
+    assert psu.output_is_on() is False
     stuck = FakeOwon(on=True, ignore_sets=("OUTP",))
     psu, fake = bench(stuck, tries=4)
     with pytest.raises(InstrumentError, match="OUTP OFF not confirmed"):
@@ -275,10 +289,12 @@ def test_ALX1544_P8_nowait_variants_write_once_without_confirm(bench):
     psu, fake = bench(FakeOwon(), limits=FIXED)
     n = len(fake.writes)
     psu.output_on_nowait()
-    assert cmds(fake)[-1] == "OUTP ON" and fake.on is True
+    assert cmds(fake)[-1] == "OUTP ON"
+    assert fake.on
     assert "OUTP?" not in cmds(fake)[n:]
     psu.output_off_nowait()
-    assert cmds(fake)[-1] == "OUTP OFF" and fake.on is False
+    assert cmds(fake)[-1] == "OUTP OFF"
+    assert not fake.on
     wrong = FakeOwon(v=48.0)
     psu, fake = bench(wrong, limits=FIXED)
     with pytest.raises(InstrumentError, match="not touching the output"):
@@ -301,16 +317,17 @@ def test_ALX1544_P10_power_cycle_is_confirmed_off_wait_confirmed_on(bench):
     psu.power_cycle(off_s=1.5)
     seq = cmds(fake)
     assert seq.index("OUTP OFF") < seq.index("OUTP ON")
-    assert seq[seq.index("OUTP OFF") + 1] == "OUTP?" and seq[seq.index("OUTP ON") + 1] == "OUTP?"
+    assert seq[seq.index("OUTP OFF") + 1] == "OUTP?"
+    assert seq[seq.index("OUTP ON") + 1] == "OUTP?"
     assert 1.5 in bench.sleeps
-    assert fake.on is True
+    assert fake.on
 
 
 def test_ALX1544_P11_wait_output_decay_samples_until_below_threshold(bench):
     psu, fake = bench(FakeOwon(meas_v=[11.8, 6.0, 0.4, 0.0]))
     samples = psu.wait_output_decay(below_v=1.0, timeout_s=5.0)
     assert [v for _, v in samples] == [11.8, 6.0, 0.4]
-    assert all(t2 >= t1 for (t1, _), (t2, _) in zip(samples, samples[1:], strict=False))
+    assert all(t2 >= t1 for (t1, _), (t2, _) in itertools.pairwise(samples))
     assert cmds(fake).count("MEAS:VOLT?") == 3
 
 
@@ -362,7 +379,8 @@ def test_ALX1544_P13_fixed_bench_wire_sees_only_queries_and_outp(bench):
 def test_ALX1544_P14_without_ovp_max_output_on_does_not_query_the_limit(bench):
     psu, fake = bench(FakeOwon(ovp=60.0), limits=Limits(expect_v=24.0))
     psu.output_on()
-    assert "VOLT:LIM?" not in cmds(fake) and fake.on is True
+    assert "VOLT:LIM?" not in cmds(fake)
+    assert fake.on
 
 
 def test_ALX1544_P15_a_silent_unit_leaves_no_open_port(bench):
@@ -384,7 +402,8 @@ def test_ALX1544_P16_setters_refuse_without_a_declared_limit(bench):
     ):
         with pytest.raises(InstrumentError, match=f"{what} refused - no limit declared"):
             call()
-    assert writes_only(fake) == [] and (fake.v, fake.i, fake.ovp, fake.ocp) == (
+    assert writes_only(fake) == []
+    assert (fake.v, fake.i, fake.ovp, fake.ocp) == (
         24.0,
         3.0,
         30.0,
@@ -395,38 +414,44 @@ def test_ALX1544_P16_setters_refuse_without_a_declared_limit(bench):
 def test_ALX1544_P17_set_voltage_and_current_verify_and_respect_limit_and_hardware(bench):
     psu, fake = bench(FakeOwon(), limits=Limits(v_max=32.0, i_max=2.5))
     assert psu.set_voltage(12.5) == 12.5
-    assert cmds(fake)[-2:] == ["VOLT 12.500", "VOLT?"] and fake.v == 12.5
+    assert cmds(fake)[-2:] == ["VOLT 12.500", "VOLT?"]
+    assert fake.v == 12.5
     assert psu.set_current(0.25) == 0.25
-    assert cmds(fake)[-2:] == ["CURR 0.250", "CURR?"] and fake.i == 0.25
+    assert cmds(fake)[-2:] == ["CURR 0.250", "CURR?"]
+    assert fake.i == 0.25
     n = len(fake.writes)
-    with pytest.raises(InstrumentError, match="set_voltage 33 refused - allowed 0..32"):
+    with pytest.raises(InstrumentError, match=re.escape("set_voltage 33 refused - allowed 0..32")):
         psu.set_voltage(33.0)
-    with pytest.raises(InstrumentError, match="set_current 2.6 refused - allowed 0..2.5"):
+    with pytest.raises(
+        InstrumentError, match=re.escape("set_current 2.6 refused - allowed 0..2.5")
+    ):
         psu.set_current(2.6)
     with pytest.raises(InstrumentError, match="set_voltage -1 refused"):
         psu.set_voltage(-1.0)
     assert len(fake.writes) == n, "a refused setter writes nothing"
     psu, fake = bench(FakeOwon(), limits=Limits(v_max=100.0, i_max=10.0))
-    with pytest.raises(InstrumentError, match="set_voltage 61 refused - allowed 0..60"):
+    with pytest.raises(InstrumentError, match=re.escape("set_voltage 61 refused - allowed 0..60")):
         psu.set_voltage(61.0)
-    with pytest.raises(InstrumentError, match="set_current 3.5 refused - allowed 0..3"):
+    with pytest.raises(InstrumentError, match=re.escape("set_current 3.5 refused - allowed 0..3")):
         psu.set_current(3.5)
 
 
 def test_ALX1544_P18_set_ovp_and_ocp_verify_and_respect_their_limits(bench):
     psu, fake = bench(FakeOwon(), limits=Limits(ovp_max=36.0, ocp_max=3.1))
     assert psu.set_ovp(35.0) == 35.0
-    assert cmds(fake)[-2:] == ["VOLT:LIM 35.000", "VOLT:LIM?"] and fake.ovp == 35.0
+    assert cmds(fake)[-2:] == ["VOLT:LIM 35.000", "VOLT:LIM?"]
+    assert fake.ovp == 35.0
     assert psu.set_ocp(3.05) == 3.05
-    assert cmds(fake)[-2:] == ["CURR:LIM 3.050", "CURR:LIM?"] and fake.ocp == 3.05
-    with pytest.raises(InstrumentError, match="set_ovp 36.5 refused - allowed 0..36"):
+    assert cmds(fake)[-2:] == ["CURR:LIM 3.050", "CURR:LIM?"]
+    assert fake.ocp == 3.05
+    with pytest.raises(InstrumentError, match=re.escape("set_ovp 36.5 refused - allowed 0..36")):
         psu.set_ovp(36.5)
-    with pytest.raises(InstrumentError, match="set_ocp 3.2 refused - allowed 0..3.1"):
+    with pytest.raises(InstrumentError, match=re.escape("set_ocp 3.2 refused - allowed 0..3.1")):
         psu.set_ocp(3.2)
     psu, fake = bench(FakeOwon(), limits=Limits(v_max=32.0, ovp_max=36.0))
     psu.output_on()  # sweeping bench: the OVP check uses ovp_max when no expect_ovp_max is declared
     psu, fake = bench(FakeOwon(ovp=40.0), limits=Limits(v_max=32.0, ovp_max=36.0))
-    with pytest.raises(InstrumentError, match="OVP is 40.0 V, above ovp_max 36.0 V"):
+    with pytest.raises(InstrumentError, match=re.escape("OVP is 40.0 V, above ovp_max 36.0 V")):
         psu.output_on()
 
 
@@ -444,13 +469,17 @@ def test_ALX1544_P19_a_setter_retries_on_mismatch_and_raises_after_tries(bench):
 
 def test_ALX1544_P20_keywords_resolve_to_numbers_and_are_checked_like_numbers(bench):
     psu, fake = bench(FakeOwon(), limits=Limits(v_max=60.0, i_max=3.0, ovp_max=60.0, ocp_max=3.0))
-    assert psu.set_voltage("MIN") == 0.0 and cmds(fake)[-2] == "VOLT 0.000"
-    assert psu.set_voltage("MAX") == 60.0 and cmds(fake)[-2] == "VOLT 60.000"
-    assert psu.set_voltage("DEF") == 5.0 and cmds(fake)[-2] == "VOLT 5.000"
+    assert psu.set_voltage("MIN") == 0.0
+    assert cmds(fake)[-2] == "VOLT 0.000"
+    assert psu.set_voltage("MAX") == 60.0
+    assert cmds(fake)[-2] == "VOLT 60.000"
+    assert psu.set_voltage("DEF") == 5.0
+    assert cmds(fake)[-2] == "VOLT 5.000"
     assert psu.set_current("def") == 2.0
-    assert psu.set_ovp("DEF") == 60.0 and psu.set_ocp("MAX") == 3.0
+    assert psu.set_ovp("DEF") == 60.0
+    assert psu.set_ocp("MAX") == 3.0
     psu, fake = bench(FakeOwon(), limits=Limits(v_max=32.0))
-    with pytest.raises(InstrumentError, match="set_voltage 60 refused - allowed 0..32"):
+    with pytest.raises(InstrumentError, match=re.escape("set_voltage 60 refused - allowed 0..32")):
         psu.set_voltage("MAX")
     with pytest.raises(InstrumentError, match="is not a number or MIN/MAX/DEF"):
         psu.set_voltage("HIGH")
@@ -459,11 +488,11 @@ def test_ALX1544_P20_keywords_resolve_to_numbers_and_are_checked_like_numbers(be
 def test_ALX1544_P21_v_max_policy_lets_output_on_accept_any_setpoint_up_to_v_max(bench):
     psu, fake = bench(FakeOwon(v=8.0), limits=Limits(v_max=32.0))
     psu.output_on()
-    assert fake.on is True
+    assert fake.on
     psu, fake = bench(FakeOwon(v=33.0), limits=Limits(v_max=32.0))
-    with pytest.raises(InstrumentError, match="setpoint is 33.0 V, above v_max 32.0 V"):
+    with pytest.raises(InstrumentError, match=re.escape("setpoint is 33.0 V, above v_max 32.0 V")):
         psu.output_on()
-    assert fake.on is False
+    assert not fake.on
 
 
 def test_ALX1544_P22_factory_reset_is_refused_by_default_and_works_when_enabled(bench):

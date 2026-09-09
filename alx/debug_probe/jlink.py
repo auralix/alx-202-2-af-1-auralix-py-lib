@@ -3,7 +3,7 @@
 
 One J-Link Commander process per operation, driven by a script written under ``run_dir`` so every
 script and transcript stays with the run's evidence. Memory reads go through the AHB-AP while the
-core runs (no halt, no reset), which is what ``alx.ram_view`` builds on. A failed connect or a
+core runs (no halt, no reset), which is what ``alx.fw.live_watch`` builds on. A failed connect or a
 non-zero exit code raises ``ProbeError``: an unpowered or missing target is an error, never a skip.
 """
 
@@ -13,11 +13,14 @@ import logging
 import os
 import re
 import subprocess
-from collections.abc import Iterable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from alx.debug_probe import ProbeResult
 from alx.errors import ProbeError
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 log = logging.getLogger(__name__)
 
@@ -71,7 +74,7 @@ class JLink:
         ]
         if self.serial:
             args += ["-SelectEmuBySN", str(self.serial)]
-        return args + ["-autoconnect", "1", "-NoGui", "1", "-CommanderScript", str(script)]
+        return [*args, "-autoconnect", "1", "-NoGui", "1", "-CommanderScript", str(script)]
 
     def run(self, lines: Iterable[str], script_name: str, timeout_s: float = 60.0) -> str:
         """Write the script under run_dir, run Commander on it and return the transcript.
@@ -85,7 +88,7 @@ class JLink:
             "J-Link %s: %s", script_name, script.read_text(encoding="ascii").replace("\n", " | ")
         )
         result = subprocess.run(
-            self.argv(script), capture_output=True, text=True, timeout=timeout_s
+            self.argv(script), capture_output=True, text=True, timeout=timeout_s, check=False
         )
         if "Cannot connect" in result.stdout or result.returncode != 0:
             raise ProbeError(
@@ -100,13 +103,13 @@ class JLink:
     @staticmethod
     def parse_mem8(transcript: str, addr: int) -> bytes | None:
         """Return the bytes Commander printed for ``mem8 addr, n`` (n <= 16), None if absent."""
-        match = re.search(MEM8_RE.format(addr=addr), transcript, re.M)
+        match = re.search(MEM8_RE.format(addr=addr), transcript, re.MULTILINE)
         if not match:
             return None
         return bytes(int(b, 16) for b in match.group(1).split())
 
     def _read_backs(self, transcript: str, addrs: Iterable[int], what: str) -> dict[int, bytes]:
-        out = {}
+        out: dict[int, bytes] = {}
         for addr in addrs:
             raw = self.parse_mem8(transcript, addr)
             if raw is None:
