@@ -14,7 +14,7 @@ name = "alx-202-2-af-1-auralix-py-lib"
 version = "0.2.0"
 description = "Auralix Python Library - debug probe, bench instruments, serial CLI client, firmware live watch, soak logger, pytest evidence helpers"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = "MIT"
 license-files = ["LICENSE"]
 dependencies = [
@@ -65,7 +65,7 @@ filterwarnings = [
 # ANALYZE stage 0 - style = PEP 8 / PEP 257 / PEP 484 plus the bug, security and pytest rule families.
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py311"
 extend-exclude = ["build"]
 
 [tool.ruff.lint]
@@ -79,7 +79,6 @@ select = [
 ignore = [
     "S603",     # subprocess without shell=True: the library exists to run bench tools by argv (JLink, gdb, git, tasklist)
     "S607",     # tools by bare name: which binary is on PATH is bench configuration (ALX_HIL_* where a path is needed)
-    "PERF203",  # try/except inside the PSU retry loop is the point: a garbage answer is retried, not raised
 ]
 
 [tool.ruff.lint.pydocstyle]
@@ -99,7 +98,7 @@ ignore-words-list = "ser,caf"                # ser = the serial port variable; c
 
 # ANALYZE stage 1 - types (mypy, strict on the package; tests are checked but need no annotations)
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.11"
 files = ["alx", "tests", "noxfile.py"]
 strict = true
 warn_unreachable = true

@@ -83,7 +83,7 @@ its lane, never skips it.
 
 #### TEST - HOST
 - **Tools**
-	- python >= 3.10; matrix 3.10 .. 3.13 (uv provides the interpreters)
+	- python >= 3.11; matrix 3.11 .. 3.13 (uv provides the interpreters)
 	- pytest + plugins: pytest-html, pytest-timeout, pytest-randomly
 	- hypothesis (property tests of parsers and codecs)
 - **Files - Config**
@@ -148,6 +148,11 @@ its lane, never skips it.
 
 ## Stack
 
+- Python floor 3.11, and a consumer may not allow less than the library requires (`requires-python`
+  in every test project, `.python-version` next to it, ruff `target-version`, mypy `python_version`,
+  the matrix - one number, changed in all of them at once). The floor is a lint input, not only a
+  runtime one: ruff silences `PERF203` (try/except inside a loop) from 3.11 on, because zero-cost
+  exceptions removed the setup cost the rule warns about.
 - Types: what a module needs from a transport or a probe is a `Protocol` (`cli.Wire`,
   `owon_p4603.Port`, `serial_logger.Port`, `debug_probe.MemoryAccess`); pyserial and the adapters
   satisfy them, so do the fakes. mypy runs strict on the package; tests are checked but need no
