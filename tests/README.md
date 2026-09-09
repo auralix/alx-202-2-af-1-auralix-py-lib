@@ -147,8 +147,14 @@ environments; `nox --no-reuse` rebuilds them. A missing tool fails its lane, nev
   satisfy them, so do the fakes. mypy runs strict on the package; tests are checked but need no
   annotations.
 - pyserial is the only runtime dependency. `pyproject.toml` makes the package installable
-  (`pip install -e .`, extras `test` and `dev`); device repos pin this repo as a git submodule and
-  put its root on pytest's `pythonpath` instead.
+  (`pip install -e .`, extras `test` and `dev`).
+- Consumers depend on this library through a uv project in their test folder (`pyproject.toml` +
+  `uv.lock` + `.venv`, `uv sync --locked`; the lane scripts run that environment's python). The
+  dependency source follows the repository's own pin mechanism: a library repository pins a released
+  tag (`alx-202-2-af-1-auralix-py-lib @ git+https://github.com/auralix/alx-202-2-af-1-auralix-py-lib@v0.1.0`);
+  a device repository carries this repo as a git submodule and points uv at it as an editable path source
+  (`[tool.uv.sources]`), so the gitlink stays the pin and library edits are live on the bench. No
+  `sys.path` or `pythonpath` entries to this repo anywhere.
 - Tests mirror the package: `tests/<package>/test_<module>.py` (a package, so tools can scope rules),
   imports through `pythonpath = "."`, over fakes: a scripted serial port (`owon_p4603`, `cli`,
   `serial_logger`), a scripted `subprocess` (`jlink`, `live_watch`, `mutation`). Real instrument
