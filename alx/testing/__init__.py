@@ -1,25 +1,23 @@
 # SPDX-License-Identifier: MIT
-"""The pytest side of a bench (HIL) suite: the parts every device repo needs and none should own.
+"""Helpers for the pytest suites that use the library (the ``numpy.testing`` idea): evidence.
 
 * traceability hook: the proof token in a test's name (``test_ALX<key>_P<n>_...``) is the primary
   trace link; it is mirrored into the junit XML as ``<property name="proof">``, every
   ``@pytest.mark.req("ALX-<key>-P<n>")`` marker as ``<property name="req">`` (``junit_family =
   xunit1``)
-* ``parse_banner``: the identity the Auralix C Library firmware traces on its debug UART after reset
-* ``git_head``: short HEAD of a repo (fw repo, submodules) for the run's identity record
 * ``run_dir``: the per-run evidence directory (``ALX_HIL_RUN_DIR`` from the launcher, else a
   timestamp)
+* ``git_head``: short HEAD of a repo (device repo, submodules) for the run's identity record
 
-Load from a device ``Test/conftest.py`` in one of two ways::
+Load from a suite's ``conftest.py``, one of two ways::
 
-    pytest_plugins = ("alx.hil",)               # when the conftest does not import alx.hil itself
+    pytest_plugins = ("alx.testing",)           # when the conftest does not import alx.testing
 
-    from alx import hil                         # when it does (for parse_banner, run_dir, ...):
+    from alx import testing                     # when it does (for run_dir, git_head):
     def pytest_configure(config):               # register the imported module; loading it by
-        config.pluginmanager.register(hil, "alx.hil")  # name afterwards = assert-rewrite warning
+        config.pluginmanager.register(testing, "alx.testing")  # name afterwards = rewrite warning
 
-Nothing here touches hardware; the fixtures (which instrument on which port, under which policy)
-stay in the device repo.
+Nothing here touches hardware or firmware; host suites and bench suites use it alike.
 """
 
 from __future__ import annotations
@@ -31,11 +29,6 @@ import time
 from pathlib import Path
 
 PROOF_RE = re.compile(r"ALX(\d+)_P(\d+)")
-BANNER_RE = re.compile(
-    rb"FW Started:.*?- FW Name: (?P<name>\S+).*?- FW Version: (?P<ver>\S+)"
-    rb".*?- FW Bin: (?P<bin>\S+\.bin)",
-    re.S,
-)
 
 
 def pytest_collection_modifyitems(items) -> None:
@@ -47,20 +40,6 @@ def pytest_collection_modifyitems(items) -> None:
         for mark in item.iter_markers(name="req"):
             for rid in mark.args:
                 item.user_properties.append(("req", rid))
-
-
-def parse_banner(raw: bytes) -> dict:
-    """Extract name, version, bin and 7-char build hash from a boot transcript, ``{}`` if none.
-
-    The firmware traces ``- FW Name: X``, ``- FW Version: <maj.min.patch.date.fullhash>`` and
-    ``- FW Bin: <date>_..._V<maj>-<min>-<patch>_<hash7>.bin`` right after reset.
-    """
-    match = BANNER_RE.search(raw)
-    if not match:
-        return {}
-    ident = {k: v.decode("ascii", "replace") for k, v in match.groupdict().items()}
-    ident["hash7"] = ident["bin"].rsplit("_", 1)[-1].removesuffix(".bin")
-    return ident
 
 
 def git_head(path: str | Path) -> str:

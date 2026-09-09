@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""alx.jlink - the J-Link Commander adapter over a scripted subprocess (no probe, no target).
+"""alx.debug_probe.jlink - the J-Link Commander adapter over a scripted subprocess (no probe, no target).
 
 The fake stands in for subprocess.run: it reads the script the adapter wrote, records argv and timeout,
 and returns a canned transcript / exit code.
@@ -24,10 +24,10 @@ from pathlib import Path
 
 import pytest
 
-import alx.jlink as jlink_mod
+import alx.debug_probe.jlink as jlink_mod
 from alx.debug_probe import ProbeResult
+from alx.debug_probe.jlink import JLink
 from alx.errors import ProbeError
-from alx.jlink import JLink
 
 MCU = "CORTEX-M0-EXAMPLE"
 BLANK16 = "FF " * 15 + "FF"

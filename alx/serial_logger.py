@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: MIT
 """Long-term UART logger for the soak mode: timestamped device lines, rotated daily.
 
-The HIL session lasts hours and ``alx.cli`` owns the CLI port while it runs. The soak mode watches a
-device for days or weeks with nobody attached: this module owns the port instead and only records. A
-COM port has one owner at a time, so the two never run on the same port.
+The HIL session lasts hours and ``alx.c_lib.cli.Cli`` owns the CLI port while it runs. The soak mode
+watches a device for days or weeks with nobody attached: this module owns the port instead and only
+records. A COM port has one owner at a time, so the two never run on the same port.
 
 In-process (a fixture on a trace-only UART during a HIL session)::
 

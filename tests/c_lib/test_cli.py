@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""alx.cli - the framed serial CLI client over a scripted wire (no device).
+"""alx.c_lib.cli - the framed serial CLI client over a scripted wire (no device).
 
 The fake port delivers RX as a queue of chunks (one chunk per read call, so frames can be split at any
 byte) and can answer a written line through a responder, like a device would.
@@ -30,7 +30,7 @@ import time
 
 import pytest
 
-from alx.cli import Cli
+from alx.c_lib.cli import Cli
 
 OK = b'{"status":"success"}\r\n'
 

@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: MIT
-"""alx.hil - the pytest side of a bench suite (no hardware).
+"""alx.testing - evidence helpers for pytest suites (no hardware).
 
 Proofs (ALX-1544):
-  P60 parse_banner extracts name, version, bin and the 7-char build hash from a boot transcript; {} without one
   P61 the collection hook mirrors the proof token of the test NAME and every req marker into user_properties
   P62 git_head gives the short HEAD of a repo and "?" outside one
   P63 run_dir honours ALX_HIL_RUN_DIR, else builds <test_dir>/build/runs/<12-digit timestamp>
@@ -14,29 +13,8 @@ from pathlib import Path
 
 import pytest
 
-import alx.hil as hil
-from alx.hil import git_head, parse_banner, pytest_collection_modifyitems, run_dir
-
-BANNER = (
-    b"[2000-01-01 00:00:00.028] [INF] APP START\r\n"
-    b"[2000-01-01 00:00:00.065] [INF] Example Device FW Started:\r\n"
-    b"[2000-01-01 00:00:00.072] [INF] - FW Name: ExampleDeviceFw\r\n"
-    b"[2000-01-01 00:00:00.079] [INF] - FW Version: 1.2.3.2609081200.0123456789abcdef0123456789abcdef01234567\r\n"
-    b"[2000-01-01 00:00:00.089] [INF] - FW Bin: 2609081200_EX-1_ExampleDeviceFw_V1-2-3_0123456.bin\r\n"
-    b"[2000-01-01 00:00:00.100] [INF] \r\n"
-)
-
-
-def test_ALX1544_P60_parse_banner_extracts_the_image_identity():
-    ident = parse_banner(BANNER)
-    assert ident == {
-        "name": "ExampleDeviceFw",
-        "ver": "1.2.3.2609081200.0123456789abcdef0123456789abcdef01234567",
-        "bin": "2609081200_EX-1_ExampleDeviceFw_V1-2-3_0123456.bin",
-        "hash7": "0123456",
-    }
-    assert parse_banner(b"") == {}
-    assert parse_banner(b"[INF] - FW Name: X\r\n") == {}
+import alx.testing as testing
+from alx.testing import git_head, pytest_collection_modifyitems, run_dir
 
 
 class _Mark:
@@ -72,7 +50,7 @@ def test_ALX1544_P61_hook_mirrors_proof_token_and_req_markers():
 
 
 def test_ALX1544_P62_git_head_of_a_repo_and_outside_one(tmp_path):
-    head = git_head(Path(hil.__file__).parent)
+    head = git_head(Path(testing.__file__).parent)
     assert re.fullmatch(r"[0-9a-f]{7,}", head), head
     assert git_head(tmp_path) == "?"
 

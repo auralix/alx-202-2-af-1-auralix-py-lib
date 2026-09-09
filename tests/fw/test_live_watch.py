@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""alx.live_watch - variables by name over a scripted gdb and a fake probe (no toolchain, no target).
+"""alx.fw.live_watch - variables by name over a scripted gdb and a fake probe (no toolchain, no target).
 
 Proofs (ALX-1544):
   P50 names are resolved with one gdb batch (print/x &expr per variable) and a snapshot is one probe
@@ -19,10 +19,10 @@ import subprocess
 
 import pytest
 
-import alx.live_watch as live_watch
+import alx.fw.live_watch as live_watch
 from alx.debug_probe import ProbeResult
 from alx.errors import ProbeError
-from alx.live_watch import LiveWatch, decode, encode, find_gdb
+from alx.fw.live_watch import LiveWatch, decode, encode, find_gdb
 
 VARS = {
     "input_ok": ("app.inputs.ok", "bool"),

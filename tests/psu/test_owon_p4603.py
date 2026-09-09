@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""alx.owon_p4603 - the complete OWON P4603 driver over a scripted serial port (no instrument).
+"""alx.psu.owon_p4603 - the complete OWON P4603 driver over a scripted serial port (no instrument).
 
 The fake implements the documented command set (*IDN?, *RST, MEAS, OUTP, VOLT, CURR, VOLT:LIM,
 CURR:LIM with MIN/MAX/DEF) from its state, records every write, can drop answers (the unit's late /
@@ -37,9 +37,9 @@ import logging
 
 import pytest
 
-import alx.owon_p4603 as owon
+import alx.psu.owon_p4603 as owon
 from alx.errors import InstrumentError
-from alx.owon_p4603 import Identity, Limits, OwonP4603, State
+from alx.psu.owon_p4603 import Identity, Limits, OwonP4603, State
 
 IDN = "OWON,P4603,00000000,FV:V1.9.0"
 FIXED = Limits(expect_v=24.0, expect_v_tol=0.1, expect_ovp_max=30.0)
@@ -248,7 +248,7 @@ def test_ALX1544_P5_expect_v_policy_accepts_a_setpoint_inside_the_tolerance(benc
 
 
 def test_ALX1544_P6_output_on_writes_outp_on_and_confirms(bench, caplog):
-    caplog.set_level(logging.INFO, logger="alx.owon_p4603")
+    caplog.set_level(logging.INFO, logger="alx.psu.owon_p4603")
     psu, fake = bench(FakeOwon(), limits=FIXED, name="SUPPLY")
     psu.output_on()
     seq = cmds(fake)

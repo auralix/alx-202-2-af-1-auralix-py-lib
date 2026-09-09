@@ -1,33 +1,37 @@
 # SPDX-License-Identifier: MIT
 """The debug probe as one equipment class: same method names for every tool, tool chosen per bench.
 
-A debug probe (SEGGER J-Link, ST-LINK, ...) is one piece of hardware used in two roles: as a
-programmer (erase, program, verify) and as a debugger (reset, memory access while the core runs).
-This module fixes the vocabulary every adapter implements and opens the adapter the bench is
-configured for, so a device repo never names a tool::
+A debug probe (SEGGER J-Link, ST-LINK, ...) is one piece of hardware with several capability groups:
+programmer (erase, program, verify), run control (reset, halt, step, registers), memory access while
+the core runs, and streaming (SWO, RTT, instruction trace). This package fixes the vocabulary every
+adapter implements and opens the adapter the bench is configured for, so a device repo never names a
+tool::
 
     probe = debug_probe.open(mcu="EXAMPLE-MCU", run_dir=RUN_DIR)  # kind from ALX_HIL_DEBUG_PROBE
-    probe.program(image, 0x0)                                      # programmer role
-    values = probe.read_mem([(0x20000010, 1)])                     # debugger role
+    probe.program(image, 0x0)                                      # programmer group
+    values = probe.read_mem([(0x20000010, 1)])                     # memory group
 
-Contract, implemented by every adapter (``DebugProbe``):
+Contract, implemented by every adapter (``DebugProbe``), by capability group:
 
-* ``kind``: the tool name the bench selects with ``ALX_HIL_DEBUG_PROBE``.
-* ``mem_while_running``: True when ``read_mem`` does not disturb the running core (declared honestly
-  per tool).
-* ``reset()``: hardware reset, the core runs afterwards.
-* ``erase_all(hold)``: erase the whole flash.
-* ``erase(start, end, hold, read_back)``: erase a range, optionally read 16 bytes back at each
-  address.
-* ``program(image, addr, verify, hold, read_back)``: program a file at an address, optionally verify
-  and read back.
-* ``read_mem(reads)``: ``{addr: bytes}`` for ``[(addr, n), ...]`` in one session.
-* ``write_mem(addr, data)``: write bytes into memory.
+* connection: ``kind`` (the tool name the bench selects with ``ALX_HIL_DEBUG_PROBE``), the probe
+  serial number, interface and speed as constructor arguments.
+* programmer: ``erase_all(hold)`` erases the whole flash; ``erase(start, end, hold, read_back)``
+  erases a range and optionally reads 16 bytes back at each address; ``program(image, addr, verify,
+  hold, read_back)`` programs a file at an address, optionally verifies and reads back.
+* run control: ``reset()``, hardware reset, the core runs afterwards. ``hold=True`` on the
+  programmer operations leaves the core halted when the session ends instead of reset + go (tool
+  permitting).
+* memory: ``read_mem(reads)`` returns ``{addr: bytes}`` for ``[(addr, n), ...]`` in one session;
+  ``write_mem(addr, data)`` writes bytes; ``mem_while_running`` declares whether these disturb the
+  running core (honestly, per tool).
 
-``hold=True`` leaves the core halted when the session ends instead of reset + go (tool permitting).
-Every operation returns a ``ProbeResult`` with the tool transcript and the requested read-backs and
-raises ``ProbeError`` when the probe cannot connect, the tool fails, a verify fails or a read-back
-is missing.
+Reserved names for the groups no adapter implements yet, so a second adapter does not invent a
+second vocabulary: run control ``halt()``, ``go()``, ``step()``, ``read_regs()``, ``write_reg()``,
+``set_breakpoint()``; programmer ``read_flash()``; streaming ``swo_start()``, ``rtt_open()``. Run
+control across several operations needs a persistent probe session (an adapter over the J-Link DLL
+or pyOCD), not the one-process-per-operation Commander adapter. Every operation returns a
+``ProbeResult`` with the tool transcript and the requested read-backs and raises ``ProbeError`` when
+the probe cannot connect, the tool fails, a verify fails or a read-back is missing.
 
 Bench configuration lives in the environment, never in git: ``ALX_HIL_DEBUG_PROBE`` (tool),
 ``ALX_HIL_DEBUG_PROBE_SN`` (probe serial number when several probes are attached), plus the tool
@@ -116,7 +120,7 @@ def open(
     kind = (kind or os.environ.get(ENV_KIND) or DEFAULT_KIND).lower()
     serial = serial or os.environ.get(ENV_SERIAL) or None
     if kind == "jlink":
-        from alx.jlink import JLink
+        from alx.debug_probe.jlink import JLink
 
         exe_path = Path(exe) if exe else JLink.find_exe()
         if exe_path is None:

@@ -16,8 +16,8 @@ import pytest
 
 import alx.debug_probe as debug_probe
 from alx.debug_probe import DebugProbe, ProbeResult
+from alx.debug_probe.jlink import JLink
 from alx.errors import ProbeError
-from alx.jlink import JLink
 
 
 @pytest.fixture
