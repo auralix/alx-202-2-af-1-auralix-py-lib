@@ -176,6 +176,11 @@ class OwonP4603:
         limits: Limits | None = None,
         serial_factory: Callable[..., Port] = serial.Serial,
     ):
+        """Open ``port`` through ``serial_factory``, as the role ``name``, under ``limits``.
+
+        The port is opened here, so the caller owns the instrument until ``close()``. ``limits``
+        decides which setter is allowed at all; the default refuses every write.
+        """
         self.port = port
         self.name = name  # role name in the log (one supply per role: "PSU", "INPUT", ...)
         self.tries = tries

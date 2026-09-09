@@ -77,11 +77,9 @@ select = [
     "PLE", "PLW", "PLC",                               # pylint errors, warnings, conventions (no complexity metrics)
 ]
 ignore = [
-    "D107",     # __init__ documented in the class docstring
-    "S603",     # subprocess without shell=True: the library runs bench tools (git, gdb, JLink, tasklist) by argv
-    "S607",     # tools by bare name: PATH is bench configuration (ALX_HIL_* variables where a path is needed)
-    "PERF203",  # try/except inside the logger loop is the point: a lost port must not end the loop
-    "RET505",   # if/else after a return stays: mypy narrows sys.platform branches only in that form
+    "S603",     # subprocess without shell=True: the library exists to run bench tools by argv (JLink, gdb, git, tasklist)
+    "S607",     # tools by bare name: which binary is on PATH is bench configuration (ALX_HIL_* where a path is needed)
+    "PERF203",  # try/except inside the PSU retry loop is the point: a garbage answer is retried, not raised
 ]
 
 [tool.ruff.lint.pydocstyle]

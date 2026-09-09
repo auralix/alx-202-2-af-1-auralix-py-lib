@@ -47,6 +47,7 @@ class Cli:
     """One serial CLI session over an open pyserial port (read timeout ~0.05 s; readers poll)."""
 
     def __init__(self, ser: Wire, log_path: str | Path):
+        """Bind the session to the open transport ``ser``; the wire log appends to ``log_path``."""
         self.ser = ser
         self._t0 = time.monotonic()
         # the wire log lives as long as the session; close() closes it

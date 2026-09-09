@@ -229,6 +229,11 @@ class MutationRun:
         fingerprint_of: Callable[[Path], str | None] = fingerprint_file,
         rebuild: Callable[[], bool] | None = None,
     ):
+        """Configure the run: repository, output folder, sampling, and the language hooks.
+
+        ``generate``, ``run``, ``check``, ``fingerprint_of`` and ``rebuild`` are the seams: the
+        defaults are the Python recipe, a compiled language passes its own (the C library does).
+        """
         self.root = Path(root).resolve()
         self.out = Path(out)
         self.sample = sample

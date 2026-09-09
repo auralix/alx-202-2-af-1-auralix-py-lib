@@ -88,6 +88,10 @@ class SerialLogger:
         idle_flush_s: float = 2.0,
         serial_factory: Callable[..., Port] = serial.Serial,
     ):
+        """Configure the logger: which port to read, where the rotating log lives, and the timing.
+
+        Nothing is opened here; ``run`` opens the port and reopens it after every loss.
+        """
         self.port = port
         self.baud = int(baud)
         self.log_dir = Path(log_dir)
@@ -219,25 +223,38 @@ class SerialLogger:
 
 
 # -- detached process ------------------------------------------------------------------
+# The platform-specific halves live in their own functions: the one the bench does not run is
+# excluded from coverage on its `def` line, and the caller stays a plain platform switch.
+def _pid_alive_posix(pid: int) -> bool:  # pragma: no cover - POSIX, the bench runs Windows
+    """Whether ``pid`` exists: signal 0 asks the kernel, it delivers nothing."""
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _pid_kill_posix(pid: int) -> None:  # pragma: no cover - POSIX, the bench runs Windows
+    """Ask the process to end (SIGTERM); the logger has no cleanup that needs SIGKILL."""
+    os.kill(pid, signal.SIGTERM)
+
+
 def _pid_alive(pid: int) -> bool:
-    if sys.platform == "win32":
-        out = subprocess.run(
-            ["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True, text=True, check=False
-        ).stdout
-        return f" {pid} " in out
-    else:  # pragma: no cover - POSIX branch, not executed on the Windows bench
-        try:
-            os.kill(pid, 0)
-        except OSError:
-            return False
-        return True
+    """Whether the process ``pid`` runs: tasklist filtered by PID on Windows, signal 0 elsewhere."""
+    if sys.platform != "win32":  # pragma: no cover - POSIX, the bench runs Windows
+        return _pid_alive_posix(pid)
+    out = subprocess.run(
+        ["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True, text=True, check=False
+    ).stdout
+    return f" {pid} " in out
 
 
 def _pid_kill(pid: int) -> None:
-    if sys.platform == "win32":
-        subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True, check=False)
-    else:  # pragma: no cover - POSIX branch, not executed on the Windows bench
-        os.kill(pid, signal.SIGTERM)
+    """End the process ``pid``: taskkill /F on Windows, SIGTERM elsewhere."""
+    if sys.platform != "win32":  # pragma: no cover - POSIX, the bench runs Windows
+        _pid_kill_posix(pid)
+        return
+    subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True, check=False)
 
 
 def status(log_dir: str | Path) -> Status:

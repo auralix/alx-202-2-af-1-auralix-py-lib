@@ -45,6 +45,10 @@ class JLink:
         iface: str = "SWD",
         speed_khz: int = 4000,
     ):
+        """Bind Commander at ``exe`` to one probe (``serial``, else the only one attached).
+
+        ``mcu`` is the target name in the tool's vocabulary; every transcript lands in ``run_dir``.
+        """
         self.exe = Path(exe)
         self.mcu = mcu
         self.run_dir = Path(run_dir)
