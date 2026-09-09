@@ -56,7 +56,7 @@ The same stages as the Auralix C Library (its `Test/README.md`), with Python's t
 
 ## ANALYZE
 - **Tools**
-	- ruff format --check + ruff check (PEP 8, PEP 257, pyupgrade, bugbear, bandit, pytest style, pathlib, ...) + codespell + `alx.verify.ascii_gate` -> Stage 0
+	- ruff format --check + ruff check (PEP 8, PEP 257, pyupgrade, bugbear, bandit, pytest style, pathlib, ...) + codespell + `alx.verify.ascii_gate` (`--exclude` for vendor folders in other repos) -> Stage 0
 	- mypy `--strict` (PEP 484; tests checked, untyped defs allowed there) -> Stage 1
 	- pip-audit (known vulnerabilities of the locked dependencies) -> Stage 2
 - **Files - Config**
@@ -78,7 +78,7 @@ The same stages as the Auralix C Library (its `Test/README.md`), with Python's t
 ## COVERAGE
 - **Tools**
 	- coverage.py (branch) through pytest-cov
-	- `alx.verify.coverage_gate` (gate): 100 % lines AND branches on every package file
+	- `alx.verify.coverage_gate` (gate): 100 % lines AND branches on every package file; reads cobertura XML, llvm-cov export JSON (`--metrics lines,branches,regions,functions`) and coverage.py JSON, so the C library and the C# lane gate with the same command
 - **Files - Config**
 	- `pyproject.toml` -> `[tool.coverage.*]`
 - **Files - Code**
@@ -90,7 +90,7 @@ The same stages as the Auralix C Library (its `Test/README.md`), with Python's t
 ## MUTATE
 - **Tools**
 	- universalmutator (mutant generation, the C library's generator)
-	- `alx.verify.mutation`: plant, run the mirror test module, classify, restore; `py_compile` and bytecode-compare filters
+	- `alx.verify.mutation`: plant, run the mirror test module, classify, restore; filters = parse check + normalized-AST fingerprint (docstrings, annotations, positions ignored); crash recovery from `build/mutation/backup/`; hooks `--check-cmd`, `--fingerprint-cmd`, `--rebuild-cmd` and `--tests-dir` for compiled languages (the C library)
 - **Files - Code**
 	- `noxfile.py` -> `mutate`
 	- `alx/verify/mutation.py`

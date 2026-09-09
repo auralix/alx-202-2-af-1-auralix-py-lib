@@ -8,6 +8,8 @@ without a compile step: for every mutant of a source file
 * ``EQUIVALENT``: the mutant has the same normalized AST as the original - docstrings, type
   annotations and source positions ignored (a whitespace, comment, docstring or annotation change);
   dropped, nothing that runs has changed
+* ``KILLED_COMPILE``: the rebuild after planting failed (a compiled language's strict build caught
+  the mutant before any test ran; scored separately)
 * ``KILLED``: the tests went red or hung (timeout) - the tests noticed the planted bug
 * ``SURVIVED``: the tests stayed green - a hole in the tests, or a behaviourally equivalent mutant;
   judge by the diff written to ``<out>/survivors/``
@@ -17,10 +19,19 @@ Kill rate = killed / (killed + survived). Report-only: exit code 0 unless the ru
 Usage::
 
     python -m alx.verify.mutation [--out build/mutation] [--sample 100] [--seed 1] src.py ...
+    python -m alx.verify.mutation --tests-dir Test --rebuild-cmd "<build the test DLL>" \
+        --check-cmd "clang -fsyntax-only {mutant}" --fingerprint-cmd "<hash of {mutant}>" alxFoo.c
 
-The tests of a source default to its mirror in ``tests/``: ``alx/pkg/mod.py`` maps to
-``tests/pkg/test_mod.py``, ``alx/pkg/__init__.py`` to ``tests/pkg/test_pkg.py`` and ``alx/mod.py``
-to ``tests/test_mod.py``; without a mirror the whole ``tests/`` folder runs. Each run is
+Other languages plug in three commands (``{mutant}`` and ``{source}`` are replaced): ``--check-cmd``
+(non-zero exit = STILLBORN), ``--fingerprint-cmd`` (prints a fingerprint; equal to the original's =
+EQUIVALENT, the C library compares object files), ``--rebuild-cmd`` (runs after planting and after
+the restore; non-zero exit = KILLED_COMPILE). Python needs none: the normalized AST is the
+fingerprint and a parse error the check.
+
+The tests of a source default to its mirror in the tests folder (``--tests-dir``, default
+``tests``): ``alx/pkg/mod.py`` maps to ``tests/pkg/test_mod.py``, ``alx/pkg/__init__.py`` to
+``tests/pkg/test_pkg.py``, ``alx/mod.py`` and a root-level ``mod.c`` to ``tests/test_mod.py``;
+without a mirror the whole tests folder runs. Each run is
 ``python -m pytest -q -x`` without random ordering and without the cache; bytecode caches are
 disabled while mutants are planted. The original of a planted source is kept under
 ``<out>/backup/`` until it is restored, so a run killed mid-plant (a reboot) is repaired by the
@@ -32,9 +43,11 @@ from __future__ import annotations
 import argparse
 import ast
 import difflib
+import functools
 import json
 import os
 import random
+import shlex
 import shutil
 import subprocess
 import sys
@@ -42,6 +55,8 @@ import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
+
+STATUSES = ("KILLED", "KILLED_COMPILE", "SURVIVED", "STILLBORN", "EQUIVALENT")
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
 Generator = Callable[[Path, Path], list[Path]]
@@ -53,7 +68,7 @@ class Outcome:
 
     source: str
     mutant: str
-    status: str  # KILLED | SURVIVED | STILLBORN | EQUIVALENT
+    status: str  # one of STATUSES
     seconds: float
     detail: str = ""
     diff: str = ""  # survivors: the diff file under <out>/survivors/
@@ -80,7 +95,7 @@ def universalmutator(source: Path, mutant_dir: Path) -> list[Path]:
         raise MutationError(
             f"mutate failed for {source}:\n{result.stdout[-800:]}\n{result.stderr[-800:]}"
         )
-    mutants = mutant_dir.glob(f"{source.stem}.mutant.*.py")
+    mutants = mutant_dir.glob(f"{source.stem}.mutant.*{source.suffix}")
     return sorted(mutants, key=lambda p: int(p.suffixes[-2][1:]))
 
 
@@ -150,17 +165,49 @@ def fingerprint(text: str, filename: str) -> str | None:
     return ast.dump(_Normalize().visit(tree))
 
 
-def default_tests_for(root: Path, source: Path) -> Path:
-    """Return the test file mirroring ``source`` under ``root/tests``, or the ``tests`` folder."""
+def fingerprint_file(path: Path) -> str | None:
+    """Return the normalized AST of a Python file (the default hook); None if it does not parse."""
+    return fingerprint(path.read_text(encoding="utf-8", errors="replace"), str(path))
+
+
+def command(template: str, root: Path, **fields: Path) -> subprocess.CompletedProcess[str]:
+    """Run a hook command template in ``root``; ``{mutant}`` and ``{source}`` are POSIX paths."""
+    argv = shlex.split(template.format(**{k: v.as_posix() for k, v in fields.items()}))
+    return subprocess.run(argv, cwd=root, capture_output=True, text=True, check=False)
+
+
+def check_command(template: str, root: Path) -> Callable[[Path], bool]:
+    """Turn ``--check-cmd`` into the check hook: exit code 0 = the mutant is viable."""
+    return lambda mutant: command(template, root, mutant=mutant).returncode == 0
+
+
+def fingerprint_command(template: str, root: Path) -> Callable[[Path], str | None]:
+    """Turn ``--fingerprint-cmd`` into the fingerprint hook: stdout is the value, failure = None."""
+
+    def hook(path: Path) -> str | None:
+        result = command(template, root, mutant=path, source=path)
+        return result.stdout.strip() if result.returncode == 0 else None
+
+    return hook
+
+
+def rebuild_command(template: str, root: Path) -> Callable[[], bool]:
+    """Turn ``--rebuild-cmd`` into the rebuild hook: exit code 0 = built."""
+    return lambda: command(template, root).returncode == 0
+
+
+def default_tests_for(root: Path, source: Path, tests_dir: str = "tests") -> Path:
+    """Return the test file mirroring ``source`` under ``root/<tests_dir>``, or that folder."""
     rel = source.resolve().relative_to(root.resolve())
-    inner = Path(*rel.parts[1:])  # drop the package root folder (alx/)
+    tests = root / tests_dir
+    inner = Path(*rel.parts[1:]) if len(rel.parts) > 1 else rel  # drop the package root folder
     if inner.name == "__init__.py" and inner.parent == Path():
-        candidate = root / "tests" / f"test_{rel.parts[0]}.py"  # the root package itself
+        candidate = tests / f"test_{rel.parts[0]}.py"  # the root package itself
     elif inner.name == "__init__.py":
-        candidate = root / "tests" / inner.parent / f"test_{inner.parent.name}.py"
+        candidate = tests / inner.parent / f"test_{inner.parent.name}.py"
     else:
-        candidate = root / "tests" / inner.parent / f"test_{inner.stem}.py"
-    return candidate if candidate.exists() else root / "tests"
+        candidate = tests / inner.parent / f"test_{inner.stem}.py"
+    return candidate if candidate.exists() else tests
 
 
 class MutationRun:
@@ -176,7 +223,11 @@ class MutationRun:
         min_timeout_s: float = 20.0,
         generate: Generator = universalmutator,
         run: Runner = subprocess.run,
-        tests_for: Callable[[Path, Path], Path] = default_tests_for,
+        tests_for: Callable[[Path, Path], Path] | None = None,
+        tests_dir: str = "tests",
+        check: Callable[[Path], bool] | None = None,
+        fingerprint_of: Callable[[Path], str | None] = fingerprint_file,
+        rebuild: Callable[[], bool] | None = None,
     ):
         self.root = Path(root).resolve()
         self.out = Path(out)
@@ -186,7 +237,10 @@ class MutationRun:
         self.min_timeout_s = min_timeout_s
         self._generate = generate
         self._run = run
-        self._tests_for = tests_for
+        self._tests_for = tests_for or functools.partial(default_tests_for, tests_dir=tests_dir)
+        self._check = check
+        self._fingerprint = fingerprint_of
+        self._rebuild = rebuild
         self.outcomes: list[Outcome] = []
 
     # -- pieces ---------------------------------------------------------------------------
@@ -226,11 +280,14 @@ class MutationRun:
         return seconds
 
     def viable(self, source: Path, mutants: list[Path]) -> list[Path]:
-        """Drop STILLBORN (no parse) and EQUIVALENT (same normalized AST) mutants; record them."""
-        original = fingerprint(source.read_text(encoding="utf-8"), str(source))
+        """Drop STILLBORN (check fails, no parse) and EQUIVALENT (same fingerprint) mutants."""
+        original = self._fingerprint(source)
         keep = []
         for mutant in mutants:
-            code = fingerprint(mutant.read_text(encoding="utf-8", errors="replace"), str(source))
+            if self._check is not None and not self._check(mutant):
+                self.outcomes.append(Outcome(str(source), mutant.name, "STILLBORN", 0.0, "check"))
+                continue
+            code = self._fingerprint(mutant)
             if code is None:
                 self.outcomes.append(Outcome(str(source), mutant.name, "STILLBORN", 0.0))
             elif code == original:
@@ -266,9 +323,9 @@ class MutationRun:
         """Baseline, generate, filter, sample, plant and test each mutant, restore, verify."""
         source = source.resolve()
         rel = source.relative_to(self.root).as_posix()
-        key = rel.removesuffix(".py").replace("/", ".")  # alx/c_lib/cli.py -> alx.c_lib.cli
+        key = rel.removesuffix(source.suffix).replace("/", ".")  # alx/c_lib/cli.py -> alx.c_lib.cli
         self.recover()
-        clear_pycache(self.root / rel.split("/")[0])
+        self._clear_pycache(rel)
         base_s = self.baseline(source)
         timeout_s = max(self.min_timeout_s, self.timeout_factor * base_s)
         mutants = self.viable(source, self._generate(source, self.out / "mutants" / key))
@@ -283,6 +340,13 @@ class MutationRun:
         try:
             for mutant in mutants:
                 source.write_bytes(mutant.read_bytes())
+                t0 = time.monotonic()
+                if self._rebuild is not None and not self._rebuild():
+                    seconds = time.monotonic() - t0
+                    results.append(
+                        Outcome(rel, mutant.name, "KILLED_COMPILE", round(seconds, 2), "rebuild")
+                    )
+                    continue
                 rc, seconds = self._pytest(source, timeout_s)
                 diff = ""
                 if rc == 0:
@@ -295,15 +359,22 @@ class MutationRun:
                 results.append(Outcome(rel, mutant.name, status, round(seconds, 2), detail, diff))
         finally:
             source.write_bytes(original)
-            clear_pycache(self.root / rel.split("/")[0])
+            self._clear_pycache(rel)
         if source.read_bytes() != original:  # pragma: no cover - a write that did not stick
             raise MutationError(f"{source} not restored")
         shutil.rmtree(self.out / "backup", ignore_errors=True)  # restored: nothing to recover
+        if self._rebuild is not None and not self._rebuild():
+            raise MutationError(f"rebuild failed after restoring {source}")
         rc, _ = self._pytest(source, timeout_s=600.0)
         if rc != 0:
             raise MutationError(f"suite red after restoring {source} (rc={rc})")
         self.outcomes.extend(results)
         return results
+
+    def _clear_pycache(self, rel: str) -> None:
+        top = self.root / rel.split("/", maxsplit=1)[0]
+        if top.is_dir():
+            clear_pycache(top)
 
     def _write_diff(self, original: bytes, mutant: Path, source: Path, key: str) -> str:
         """Write the survivor's diff as ``<key>.mutant.<n>.diff``; return that file name."""
@@ -323,7 +394,7 @@ class MutationRun:
     # -- report ---------------------------------------------------------------------------
     def counts(self) -> dict[str, int]:
         """Return ``{status: count}`` over every outcome so far."""
-        counts = {"KILLED": 0, "SURVIVED": 0, "STILLBORN": 0, "EQUIVALENT": 0}
+        counts = dict.fromkeys(STATUSES, 0)
         for outcome in self.outcomes:
             counts[outcome.status] += 1
         return counts
@@ -341,6 +412,7 @@ class MutationRun:
         lines = [
             "MUTATION RUN (report-only)",
             f"killed {counts['KILLED']}  survived {counts['SURVIVED']}  "
+            f"killed_compile {counts['KILLED_COMPILE']}  "
             f"stillborn {counts['STILLBORN']}  equivalent {counts['EQUIVALENT']}",
             "kill rate: " + ("n/a" if rate is None else f"{rate:.1f}%"),
             "",
@@ -375,15 +447,47 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", default="build/mutation", help="output folder")
     parser.add_argument("--sample", type=int, default=0, help="mutants per source, 0 = all")
     parser.add_argument("--seed", type=int, default=1, help="sampling seed")
+    parser.add_argument(
+        "--tests-dir", default="tests", help="tests folder under root (default tests)"
+    )
+    parser.add_argument(
+        "--check-cmd", help="viability check of {mutant}; non-zero exit = STILLBORN"
+    )
+    parser.add_argument(
+        "--fingerprint-cmd",
+        help="prints a fingerprint of {mutant}; equal to the original's = EQUIVALENT",
+    )
+    parser.add_argument(
+        "--rebuild-cmd",
+        help="runs after planting and after the restore; non-zero exit = KILLED_COMPILE",
+    )
     args = parser.parse_args(argv)
-    run = MutationRun(args.root, args.out, sample=args.sample, seed=args.seed)
+    root = Path(args.root).resolve()
+    run = MutationRun(
+        args.root,
+        args.out,
+        sample=args.sample,
+        seed=args.seed,
+        tests_dir=args.tests_dir,
+        check=check_command(args.check_cmd, root) if args.check_cmd else None,
+        fingerprint_of=(
+            fingerprint_command(args.fingerprint_cmd, root)
+            if args.fingerprint_cmd
+            else fingerprint_file
+        ),
+        rebuild=rebuild_command(args.rebuild_cmd, root) if args.rebuild_cmd else None,
+    )
     try:
         for rel in run.start():
             sys.stdout.write(f"RECOVERED {rel} (a previous run was interrupted while planted)\n")
         for src in args.sources:
             results = run.run_source(Path(args.root) / src)
             killed = sum(r.status == "KILLED" for r in results)
-            sys.stdout.write(f"{src}: {killed} killed, {len(results) - killed} survived\n")
+            compile_killed = sum(r.status == "KILLED_COMPILE" for r in results)
+            survived = len(results) - killed - compile_killed
+            sys.stdout.write(
+                f"{src}: {killed} killed, {compile_killed} killed_compile, {survived} survived\n"
+            )
     except MutationError as ex:
         sys.stdout.write(f"MUTATION RUN FAILED: {ex}\n")
         return 1

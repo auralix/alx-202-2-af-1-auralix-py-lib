@@ -3,11 +3,12 @@
 
 Sources, tests, configuration and documentation stay plain ASCII so every tool, terminal and diff
 shows them alike; non-ASCII content belongs in data files, never in code. Tool and build folders
-are skipped. Usage::
+are skipped; vendor folders are excluded by the caller. Usage::
 
-    python -m alx.verify.ascii_gate <root> [--out report.txt]
+    python -m alx.verify.ascii_gate <root> [--exclude <name-or-relative-path>]... [--out report.txt]
 
-Exit code 0 = PASS, 1 = FAIL; the first offending byte of each file is reported.
+An exclude matches a folder name anywhere in the tree (``Ext``) or a path relative to the root
+(``Test/gen``). Exit code 0 = PASS, 1 = FAIL; the first offending byte of each file is reported.
 """
 
 from __future__ import annotations
@@ -37,13 +38,24 @@ SKIP_DIRS = frozenset(
 )  # fmt: skip
 
 
-def text_files(root: str | Path) -> list[Path]:
-    """Return the text files under ``root`` (by suffix or name), skipping tool and build folders."""
+def _excluded(rel: Path, exclude: Iterable[str]) -> bool:
+    parts = rel.parts
+    posix = rel.as_posix()
+    for item in exclude:
+        norm = item.replace("\\", "/").strip("/")
+        if norm in parts or posix == norm or posix.startswith(norm + "/"):
+            return True
+    return False
+
+
+def text_files(root: str | Path, exclude: Iterable[str] = ()) -> list[Path]:
+    """Return the text files under ``root`` (suffix or name), minus skipped and excluded folders."""
     root = Path(root)
+    exclude = tuple(exclude)
     files = []
     for path in sorted(root.rglob("*"), key=lambda p: p.as_posix()):  # case-sensitive order
-        parts = path.relative_to(root).parts
-        if any(part in SKIP_DIRS for part in parts):
+        rel = path.relative_to(root)
+        if any(part in SKIP_DIRS for part in rel.parts) or _excluded(rel, exclude):
             continue
         if path.is_file() and (path.suffix in TEXT_SUFFIXES or path.name in TEXT_NAMES):
             files.append(path)
@@ -75,11 +87,21 @@ def main(argv: list[str] | None = None) -> int:
     """Command line entry; see the module docstring."""
     parser = argparse.ArgumentParser(prog="python -m alx.verify.ascii_gate", description=__doc__)
     parser.add_argument("root", help="folder to scan (recursively)")
+    parser.add_argument(
+        "--exclude",
+        action="append",
+        default=[],
+        metavar="NAME_OR_PATH",
+        help="folder name anywhere in the tree, or a path relative to root; repeatable",
+    )
     parser.add_argument("--out", help="also write the report to this file")
     args = parser.parse_args(argv)
-    files = text_files(args.root)
+    files = text_files(args.root, args.exclude)
     findings = check(files)
-    lines = [f"ASCII GATE: {'FAIL' if findings else 'PASS'} ({len(files)} files)", *findings]
+    scope = f"{len(files)} files" + (
+        f", excluded: {', '.join(args.exclude)}" if args.exclude else ""
+    )
+    lines = [f"ASCII GATE: {'FAIL' if findings else 'PASS'} ({scope})", *findings]
     report = "\n".join(lines) + "\n"
     sys.stdout.write(report)
     if args.out:

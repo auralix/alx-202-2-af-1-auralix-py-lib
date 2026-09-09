@@ -5,6 +5,7 @@ Proofs (ALX-1544):
   P100 text files are selected by suffix or by name; tool and build folders are skipped
   P101 the first non-ASCII byte is reported with its line; pure ASCII gives None
   P102 main() prints and writes the report: PASS exits 0, FAIL exits 1 and names the offender once
+  P132 --exclude skips folders by name or by relative path (the C library keeps vendor code out of the gate)
 """
 
 from pathlib import Path
@@ -83,3 +84,27 @@ def test_ALX1544_P129_gate_scope_covers_the_repository_text_kinds():
     } <= (ascii_gate.SKIP_DIRS)
     assert {".hypothesis", ".pytest_cache"} <= ascii_gate.SKIP_DIRS
     assert "" not in ascii_gate.TEXT_SUFFIXES | ascii_gate.TEXT_NAMES | ascii_gate.SKIP_DIRS
+
+
+def test_ALX1544_P132_exclude_by_folder_name_or_relative_path(tmp_path, capsys):
+    tree(tmp_path)
+    (tmp_path / "Ext" / "vendor").mkdir(parents=True)
+    (tmp_path / "Ext" / "vendor" / "lib.c").write_bytes(b"caf\xc3\xa9\n")
+    (tmp_path / "Mcu" / "Ext").mkdir(parents=True)
+    (tmp_path / "Mcu" / "Ext" / "port.c").write_bytes(b"ok\n")
+    (tmp_path / "Test" / "gen").mkdir(parents=True)
+    (tmp_path / "Test" / "gen" / "table.c").write_bytes(b"\xff\n")
+    all_names = [p.relative_to(tmp_path).as_posix() for p in ascii_gate.text_files(tmp_path)]
+    assert "Ext/vendor/lib.c" in all_names
+    assert ascii_gate.main([str(tmp_path)]) == 1
+
+    kept = [
+        p.relative_to(tmp_path).as_posix()
+        for p in ascii_gate.text_files(tmp_path, exclude=["Ext", "Test/gen"])
+    ]
+    assert kept == ["LICENSE", "alx/mod.py", "notes.md"], (
+        "Ext by name (both of them), Test/gen by relative path; Mcu/Ext/port.c is under an excluded name too"
+    )
+    assert ascii_gate.main([str(tmp_path), "--exclude", "Ext", "--exclude", "Test/gen"]) == 0
+    out = capsys.readouterr().out
+    assert "ASCII GATE: PASS (3 files, excluded: Ext, Test/gen)" in out

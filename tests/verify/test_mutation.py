@@ -17,9 +17,16 @@ Proofs (ALX-1544):
   P115 a docstring-only mutant is EQUIVALENT (fingerprint ignores docstrings)
   P131 mutation-driven hardening: an inserted line, a changed annotation and a moved position are EQUIVALENT;
        main() passes --sample/--seed on and defaults sample to 0
+  P134 hooks for other languages: check fails -> STILLBORN, equal fingerprint -> EQUIVALENT, rebuild fails ->
+       KILLED_COMPILE (scored apart from the kill rate), rebuild runs again after the restore and its failure
+       is a MutationError
+  P135 a root-level C source with a Test/ folder: mirror test_<stem>.py, suffix-aware mutant files, dotted key
+  P136 the command hooks from templates ({mutant} / {source} replaced, run in the root): check, fingerprint,
+       rebuild; main() wires --tests-dir, --check-cmd, --fingerprint-cmd, --rebuild-cmd
 """
 
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -208,7 +215,13 @@ def test_ALX1544_P108_run_source_classifies_restores_and_reports(tmp_path):
         ("mod.mutant.1.py", "SURVIVED", ""),
         ("mod.mutant.4.py", "KILLED", "timeout"),
     ]
-    assert run.counts() == {"KILLED": 2, "SURVIVED": 1, "STILLBORN": 1, "EQUIVALENT": 1}
+    assert run.counts() == {
+        "KILLED": 2,
+        "KILLED_COMPILE": 0,
+        "SURVIVED": 1,
+        "STILLBORN": 1,
+        "EQUIVALENT": 1,
+    }
     assert run.kill_rate() == pytest.approx(200 / 3)
     assert src.read_text(encoding="utf-8") == SRC, "the original is restored"
     assert len(runner.calls) == 5, "baseline + 3 viable mutants + restoration proof"
@@ -222,7 +235,7 @@ def test_ALX1544_P108_run_source_classifies_restores_and_reports(tmp_path):
 
     text = run.report()
     assert text.endswith("\n")
-    assert "killed 2  survived 1  stillborn 1  equivalent 1" in text
+    assert "killed 2  survived 1  killed_compile 0  stillborn 1  equivalent 1" in text
     assert "kill rate: 66.7%" in text
     assert "SURVIVED  pkg/mod.py  mod.mutant.1.py  -> survivors/pkg.mod.mutant.1.diff" in text
     results_json = json.loads((tmp_path / "out" / "results.json").read_text(encoding="utf-8"))
@@ -311,8 +324,9 @@ def test_ALX1544_P112_main_runs_every_source_and_reports_or_fails(tmp_path, monk
     made: list[tuple[object, ...]] = []
 
     class FakeRun:
-        def __init__(self, root, out, sample=0, seed=1):
+        def __init__(self, root, out, sample=0, seed=1, **hooks):
             self.args = (root, out, sample, seed)
+            self.hooks = hooks
             made.append(self.args)
 
         def run_source(self, source):
@@ -334,10 +348,202 @@ def test_ALX1544_P112_main_runs_every_source_and_reports_or_fails(tmp_path, monk
     assert mutation.main(argv) == 0
     out = capsys.readouterr().out
     assert out.startswith("RECOVERED alx/left.py")
-    assert "alx/ok.py: 1 killed, 1 survived" in out
+    assert "alx/ok.py: 1 killed, 0 killed_compile, 1 survived" in out
     assert out.endswith("REPORT\n")
     assert mutation.main(["--root", str(tmp_path), "alx/bad.py"]) == 1
     assert "MUTATION RUN FAILED: baseline is red for bad.py" in capsys.readouterr().out
     assert [m[2:] for m in made] == [(5, 1), (0, 1)], (
         "--sample and --seed reach the run; defaults 0 / 1"
     )
+
+
+C_SRC = "int add(int a, int b) { return a + b; }\nint sub(int a, int b) { return a - b; }\n"
+C_MUTANTS = {
+    "alxMath.mutant.0.c": C_SRC.replace("a + b", "a - b"),  # killed by the tests
+    "alxMath.mutant.1.c": C_SRC.replace("a - b", "a + b"),  # survives: sub is untested
+    "alxMath.mutant.2.c": C_SRC.replace("return a + b;", "return a + b;  /* c */"),  # same object
+    "alxMath.mutant.3.c": C_SRC.replace("a + b;", "a + b"),  # does not compile
+    "alxMath.mutant.4.c": C_SRC.replace("a + b", "a * b"),  # the rebuild refuses this one
+}
+
+
+def c_project(root: Path) -> Path:
+    src = root / "alxMath.c"
+    src.write_text(C_SRC, encoding="utf-8")
+    (root / "Test").mkdir()
+    (root / "Test" / "test_alxMath.py").write_text("def test_add():\n    pass\n", encoding="utf-8")
+    return src
+
+
+def c_generate(source: Path, mutant_dir: Path) -> list[Path]:
+    mutant_dir.mkdir(parents=True, exist_ok=True)
+    paths = []
+    for name, text in C_MUTANTS.items():
+        (mutant_dir / name).write_text(text, encoding="utf-8")
+        paths.append(mutant_dir / name)
+    return paths
+
+
+class CToolchain:
+    """Scripted C toolchain: check = 'compiles', fingerprint = the code without comments, rebuild = not a * b."""
+
+    def __init__(self, source: Path):
+        self.source = source
+        self.rebuilds = 0
+        self.tests: list[str] = []
+
+    def check(self, mutant: Path) -> bool:
+        return mutant.read_text(encoding="utf-8").count(";") == 2
+
+    def fingerprint(self, path: Path) -> str | None:
+        text = path.read_text(encoding="utf-8")
+        if text.count(";") != 2:
+            return None
+        return re.sub(r"/\*.*?\*/", "", text).replace(" ", "")
+
+    def rebuild(self) -> bool:
+        self.rebuilds += 1
+        return "a * b" not in self.source.read_text(encoding="utf-8")
+
+    def run_tests(self, cmd, cwd, capture_output, text, timeout, check, env):
+        body = self.source.read_text(encoding="utf-8")
+        self.tests.append(cmd[-1])
+        rc = 0 if "return a + b" in body else 1
+        return subprocess.CompletedProcess(cmd, rc, stdout="", stderr="")
+
+
+def test_ALX1544_P134_language_hooks_check_fingerprint_rebuild(tmp_path):
+    src = c_project(tmp_path)
+    tc = CToolchain(src)
+    run = MutationRun(
+        tmp_path,
+        tmp_path / "out",
+        generate=c_generate,
+        run=tc.run_tests,
+        tests_dir="Test",
+        check=tc.check,
+        fingerprint_of=tc.fingerprint,
+        rebuild=tc.rebuild,
+    )
+    results = run.run_source(src)
+    assert [(r.mutant, r.status, r.detail) for r in results] == [
+        ("alxMath.mutant.0.c", "KILLED", "rc=1"),
+        ("alxMath.mutant.1.c", "SURVIVED", ""),
+        ("alxMath.mutant.4.c", "KILLED_COMPILE", "rebuild"),
+    ]
+    assert run.counts() == {
+        "KILLED": 1,
+        "KILLED_COMPILE": 1,
+        "SURVIVED": 1,
+        "STILLBORN": 1,
+        "EQUIVALENT": 1,
+    }
+    assert run.kill_rate() == 50.0, "compile kills are scored apart"
+    assert tc.rebuilds == 4, "one per planted mutant + one after the restore"
+    assert src.read_text(encoding="utf-8") == C_SRC
+    assert "killed 1  survived 1  killed_compile 1  stillborn 1  equivalent 1" in run.report()
+
+    class NoRebuild(CToolchain):
+        def rebuild(self) -> bool:
+            self.rebuilds += 1
+            return self.rebuilds < 3  # fails on the restore
+
+    broken = NoRebuild(src)
+    with pytest.raises(MutationError, match="rebuild failed after restoring"):
+        MutationRun(
+            tmp_path,
+            tmp_path / "out2",
+            generate=c_generate,
+            run=broken.run_tests,
+            tests_dir="Test",
+            check=broken.check,
+            fingerprint_of=broken.fingerprint,
+            rebuild=broken.rebuild,
+        ).run_source(src)
+    assert src.read_text(encoding="utf-8") == C_SRC
+
+
+def test_ALX1544_P135_root_level_c_source_with_a_test_folder(tmp_path):
+    src = c_project(tmp_path)
+    tc = CToolchain(src)
+    run = MutationRun(
+        tmp_path,
+        tmp_path / "out",
+        generate=c_generate,
+        run=tc.run_tests,
+        tests_dir="Test",
+        check=tc.check,
+        fingerprint_of=tc.fingerprint,
+    )
+    assert (
+        mutation.default_tests_for(tmp_path, src, "Test") == tmp_path / "Test" / "test_alxMath.py"
+    )
+    assert mutation.default_tests_for(tmp_path, src) == tmp_path / "tests", (
+        "no tests/ folder: fallback"
+    )
+    results = run.run_source(src)
+    assert tc.tests[0].endswith("test_alxMath.py")
+    assert (tmp_path / "out" / "mutants" / "alxMath").is_dir(), "key = stem without the .c suffix"
+    survivor = next(r for r in results if r.status == "SURVIVED")
+    assert survivor.diff == "alxMath.mutant.1.diff"
+    assert (tmp_path / "out" / "survivors" / "alxMath.mutant.1.diff").exists()
+
+
+def test_ALX1544_P136_command_hooks_and_main_wiring(tmp_path, monkeypatch, capsys):
+    good = tmp_path / "good.c"
+    good.write_text("ok", encoding="utf-8")
+    py = Path(sys.executable).as_posix()  # hook templates take POSIX-style paths
+    check = mutation.check_command(
+        py
+        + ' -c "import sys; sys.exit(0 if open(sys.argv[1]).read() == chr(111)+chr(107) else 1)" {mutant}',
+        tmp_path,
+    )
+    assert check(good) is True
+    bad = tmp_path / "bad.c"
+    bad.write_text("no", encoding="utf-8")
+    assert check(bad) is False
+    fp = mutation.fingerprint_command(
+        py + ' -c "import sys; print(len(open(sys.argv[1]).read()))" {mutant}', tmp_path
+    )
+    assert fp(good) == "2"
+    assert fp(bad) == "2", "same length, same fingerprint: EQUIVALENT by this hook"
+    failing = mutation.fingerprint_command(py + ' -c "import sys; sys.exit(3)" {source}', tmp_path)
+    assert failing(good) is None
+    rebuild_ok = mutation.rebuild_command(py + ' -c "import sys; sys.exit(0)"', tmp_path)
+    rebuild_bad = mutation.rebuild_command(py + ' -c "import sys; sys.exit(2)"', tmp_path)
+    assert rebuild_ok() is True
+    assert rebuild_bad() is False
+
+    calls: list[dict[str, object]] = []
+
+    class FakeRun:
+        def __init__(self, root, out, sample=0, seed=1, **hooks):
+            calls.append(dict(hooks))
+
+        def start(self):
+            return []
+
+        def run_source(self, source):
+            return []
+
+        def report(self):
+            return "REPORT\n"
+
+    monkeypatch.setattr(mutation, "MutationRun", FakeRun)
+    argv = [
+        "--root", str(tmp_path), "--tests-dir", "Test",
+        "--check-cmd", "c {mutant}", "--fingerprint-cmd", "f {mutant}", "--rebuild-cmd", "b",
+        "alxMath.c",
+    ]  # fmt: skip
+    assert mutation.main(argv) == 0
+    assert mutation.main(["--root", str(tmp_path), "alxMath.c"]) == 0
+    with_hooks, defaults = calls
+    assert with_hooks["tests_dir"] == "Test"
+    assert callable(with_hooks["check"])
+    assert callable(with_hooks["rebuild"])
+    assert with_hooks["fingerprint_of"] is not mutation.fingerprint_file
+    assert defaults["tests_dir"] == "tests"
+    assert defaults["check"] is None
+    assert defaults["rebuild"] is None
+    assert defaults["fingerprint_of"] is mutation.fingerprint_file
+    assert capsys.readouterr().out.count("REPORT") == 2
