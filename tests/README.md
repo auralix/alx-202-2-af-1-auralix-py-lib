@@ -12,8 +12,10 @@
 # Verification Pipeline
 
 The same stages as the Auralix C Library (its `Test/README.md`), with Python's tools. One runner,
-`nox` (`noxfile.py`, one session per stage); evidence under `build/<stage>/`, the dev lane under
-`build/` itself.
+`nox` (`noxfile.py`, one session per stage, named after it: `uv run nox -s <stage>`), running inside
+the repository's uv environment; evidence under `build/<stage>/`, the dev lane under `build/` itself.
+The vocabulary the noxfile of every repository shares (stage names, evidence folders, report options,
+tool locations) is `alx/verify/lanes.py`.
 
 ## WRITE
 - **Tools**
@@ -24,12 +26,12 @@ The same stages as the Auralix C Library (its `Test/README.md`), with Python's t
 	- `.editorconfig`, `.gitattributes`, `.gitignore`
 	- `uv.lock`
 - **Files - Generated**
-	- `.venv/` (uv), `.nox/` (one environment per lane)
+	- `.venv/` (uv, the environment of every lane), `.nox/` (matrix only: one environment per interpreter)
 
 ## BUILD - HOST
 - **Tools**
 	- `python -m compileall` (byte-compile = syntax over the whole package)
-	- build (PEP 517 sdist + wheel), twine `check --strict` (metadata), check-wheel-contents
+	- `uv build` (PEP 517 sdist + wheel), twine `check --strict` (metadata), check-wheel-contents
 	- uv venv + install of the wheel + import of every module = install smoke
 - **Files - Config**
 	- `pyproject.toml` -> `[build-system]`, `[project]`, `[tool.setuptools]`
@@ -49,7 +51,7 @@ The same stages as the Auralix C Library (its `Test/README.md`), with Python's t
 	- `tests/conftest.py`
 	- `tests/<package>/test_<module>.py` -> `tests/c_lib/test_cli.py`
 	- `Fake<Thing>` classes inside the test file -> `FakeWire`
-	- `noxfile.py` -> `tests`, `matrix`
+	- `noxfile.py` -> `test`, `matrix`
 - **Files - Generated**
 	- `build/pytest_report.xml`, `build/pytest_report.html`
 	- `build/matrix/py<ver>/` (the same pair per interpreter) -> `build/matrix/py312/`
@@ -58,14 +60,14 @@ The same stages as the Auralix C Library (its `Test/README.md`), with Python's t
 - **Tools**
 	- ruff format --check + ruff check (PEP 8, PEP 257, pyupgrade, bugbear, bandit, pytest style, pathlib, ...) + codespell + `alx.verify.ascii_gate` (`--exclude` for vendor folders in other repos) -> Stage 0
 	- mypy `--strict` (PEP 484; tests checked, untyped defs allowed there) -> Stage 1
-	- pip-audit (known vulnerabilities of the locked dependencies) -> Stage 2
+	- pip-audit over `uv export` of `uv.lock` (known vulnerabilities of the locked dependencies) -> Stage 2
 - **Files - Config**
 	- `pyproject.toml` -> `[tool.ruff]`, `[tool.codespell]`, `[tool.mypy]`
 - **Files - Code**
 	- `noxfile.py` -> `analyze`
 	- `alx/verify/ascii_gate.py`
 - **Files - Generated**
-	- `build/analysis/ruff.xml`, `mypy.xml`, `ascii_gate.txt`, `pip_audit.json`
+	- `build/analyze/ruff.xml`, `mypy.xml`, `ascii_gate.txt`, `requirements.txt`, `pip_audit.json`
 
 ## SANITIZE
 - **Tools**
@@ -85,17 +87,17 @@ The same stages as the Auralix C Library (its `Test/README.md`), with Python's t
 	- `noxfile.py` -> `coverage`
 	- `alx/verify/coverage_gate.py`
 - **Files - Generated**
-	- `build/cov/coverage.xml` (cobertura), `coverage.json` (gate input), `html/index.html`, `coverage_gate.txt`, `pytest_report.*`
+	- `build/coverage/coverage.xml` (cobertura, gate input), `coverage.json`, `html/index.html`, `coverage_gate.txt`, `pytest_report.*`
 
 ## MUTATE
 - **Tools**
 	- universalmutator (mutant generation, the C library's generator)
-	- `alx.verify.mutation`: plant, run the mirror test module, classify, restore; filters = parse check + normalized-AST fingerprint (docstrings, annotations, positions ignored); crash recovery from `build/mutation/backup/`; hooks `--check-cmd`, `--fingerprint-cmd`, `--rebuild-cmd` and `--tests-dir` for compiled languages (the C library)
+	- `alx.verify.mutation`: plant, run the mirror test module, classify, restore; filters = parse check + normalized-AST fingerprint (docstrings, annotations, positions ignored); crash recovery from `build/mutate/backup/`; hooks `--check-cmd`, `--fingerprint-cmd`, `--rebuild-cmd` and `--tests-dir` for compiled languages (the C library)
 - **Files - Code**
 	- `noxfile.py` -> `mutate`
 	- `alx/verify/mutation.py`
 - **Files - Generated**
-	- `build/mutation/mutants/<module>/`, `survivors/*.diff`, `report.txt`, `results.json`
+	- `build/mutate/mutants/<module>/`, `survivors/*.diff`, `report.txt`, `results.json`
 
 ## COMPILE - TARGET
 - not applicable: pure Python, nothing is built for a target. The wheel of BUILD - HOST and the interpreter matrix of TEST - HOST take its place.
@@ -114,16 +116,18 @@ This file holds rules and facts only; task details belong to the Jira task and i
 ## Run
 
 ```
-python -m pytest        # dev loop: the offline suite (no instrument, no target, any machine)
-nox -l                  # the lanes
-nox                     # analyze, tests, sanitize, coverage, build
-nox -s mutate           # report-only, slow
-nox -s matrix           # every supported interpreter
-nox -s tests -- -k cli  # arguments after -- go to pytest
+uv sync --locked --extra dev   # once: the environment of every lane (.venv, from uv.lock)
+python -m pytest               # dev loop: the offline suite (no instrument, no target, any machine)
+uv run nox -l                  # the lanes = the pipeline stages
+uv run nox                     # build, test, analyze, sanitize, coverage
+uv run nox -s mutate           # report-only, slow
+uv run nox -s matrix           # every supported interpreter
+uv run nox -s test -- -k cli   # arguments after -- go to pytest
 ```
 
-Reproducible environment: `uv sync --locked --extra dev` (`uv.lock`). nox reuses its `.nox/`
-environments; `nox --no-reuse` rebuilds them. A missing tool fails its lane, never skips it.
+The lanes run in the repository's own environment, no second environment per lane; only `matrix`
+keeps one venv per interpreter under `.nox/` (`nox --no-reuse` rebuilds them). A missing tool fails
+its lane, never skips it.
 
 ## Stack
 
@@ -135,7 +139,8 @@ environments; `nox --no-reuse` rebuilds them. A missing tool fails its lane, nev
     port, keeps trace bytes aside), `trace` (boot banner and `[ts] [LVL] text` line parsers)
   - `alx.fw`: the firmware image side - `live_watch` (variables by name, read and written through a
     probe while the core runs)
-  - `alx.verify`: the pipeline's shared pieces for any repo - `evidence` (the pytest plugin: proof
+  - `alx.verify`: the pipeline's shared pieces for any repo - `lanes` (the noxfile vocabulary: stage
+    names, evidence folders, report options, tool locations), `evidence` (the pytest plugin: proof
     properties, `run_dir`, `git_head`) and the lane gates as commands (`ascii_gate`, `coverage_gate`,
     `mutation`)
   - `alx.serial_logger` (days-long UART logging, the soak mode), `alx.errors`
@@ -175,8 +180,12 @@ environments; `nox --no-reuse` rebuilds them. A missing tool fails its lane, nev
 
 ## Lanes
 
-- `build/` layout: root = dev lane (`pytest_report.*`); one subfolder per lane (`analysis/`,
-  `sanitize/`, `cov/`, `mutation/`, `dist/`, `matrix/py<ver>/`) - the C library's layout.
+- Lane = stage: the session name, the `nox -s` argument and the evidence folder are the stage word,
+  the same in every repository (`build test analyze sanitize coverage mutate`; a C or C# repo has the
+  same `noxfile.py` in its test folder, importing `alx.verify.lanes`).
+- `build/` layout: root = dev lane (`pytest_report.*`); one subfolder per lane (`analyze/`,
+  `sanitize/`, `coverage/`, `mutate/`, `matrix/py<ver>/`) and BUILD's product folder `dist/` - the C
+  library's layout.
 - One suite serves every lane: SANITIZE, COVERAGE and MUTATE re-run `tests/` under other conditions;
   a lane never has tests of its own.
 - Style and spelling gates live in ANALYZE Stage 0, not inside pytest: a style finding is not a test
