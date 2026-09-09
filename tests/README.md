@@ -35,7 +35,9 @@ its lane, never skips it.
   - `alx.verify`: the pipeline's shared pieces for any repo - `lanes` (the noxfile vocabulary: stage
     names, evidence folders, report options, tool locations), `evidence` (the pytest plugin: proof
     properties, `run_dir`, `git_head`) and the lane gates as commands (`ascii_gate`, `readme_gate`,
-    `coverage_gate`, `mutation`)
+    `c_style`, `coverage_gate`, `mutation`). A gate a C or C# repository needs lives here too: this
+    repository has no C file to run `c_style` on, its consumers do, and one implementation with one
+    test suite beats a copy per repository
   - `alx.serial_logger` (days-long UART logging, the soak mode), `alx.errors`
 - Tests mirror the package: `tests/<package>/test_<module>.py` (a package, so tools can scope rules),
   imports through `pythonpath = "."`, over fakes: a scripted serial port (`owon_p4603`, `cli`,
@@ -107,6 +109,7 @@ its lane, never skips it.
 - **Files - Code**
 	- `noxfile.py` -> `analyze`
 	- `alx/verify/ascii_gate.py`, `alx/verify/readme_gate.py`
+	- `alx/verify/c_style.py` -> `python -m alx.verify.c_style <files>`: no ternary operator, doxygen tag lines aligned on tabs; for the C repositories' Stage 0, no C source in this repository
 - **Files - Generated**
 	- `build/analyze/ruff.xml`, `mypy.xml`, `ascii_gate.txt`, `readme_gate.txt`, `requirements.txt`, `pip_audit.json`
 

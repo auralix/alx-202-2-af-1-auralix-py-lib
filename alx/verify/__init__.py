@@ -12,6 +12,8 @@ library's own modules: paths, thresholds and commands come from the caller (the 
 * ``ascii_gate``: every text file is pure ASCII.
 * ``readme_gate``: every Markdown file uses the heading levels ``#``, ``##``, ``####`` only, and no
   horizontal rules.
+* ``c_style``: the two mechanical C rules a compiler cannot state - no ternary operator, and the
+  doxygen tag lines of a block aligned on tabs (for the C repositories' ANALYZE stage).
 * ``coverage_gate``: every file of a coverage report (cobertura, llvm-cov, coverage.py) reaches the
   minimum in every gated metric.
 * ``mutation``: plant each mutant of a source, run its tests, classify, report the survivors.
