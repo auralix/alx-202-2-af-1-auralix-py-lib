@@ -182,6 +182,12 @@ its lane, never skips it.
   same `noxfile.py` in its test folder, importing `alx.verify.lanes`).
 - One suite serves every lane: SANITIZE, COVERAGE and MUTATE re-run `tests/` under other conditions;
   a lane never has tests of its own.
+- Random order every run (pytest-randomly), never a fixed seed: the seed is recorded as the junit
+  testsuite property `randomly_seed` by `alx.verify.evidence`; reproduce a run with
+  `--randomly-seed=<n>`. Suites that drive one stateful device run in file order (`-p no:randomly`)
+  and record nothing.
+- The interpreter matrix (`uv run nox -s matrix`) is on demand locally and routine in CI; it is not in
+  the default set.
 - Style and spelling gates live in ANALYZE Stage 0, not inside pytest: a style finding is not a test
   result and must never count as a killed mutant.
 - Coverage gate = 100 % lines and branches on every package file. A line that cannot run on the host

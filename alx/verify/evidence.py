@@ -8,6 +8,9 @@
 * ``run_dir``: the per-run evidence directory (``ALX_HIL_RUN_DIR`` from the launcher, else a
   timestamp)
 * ``git_head``: short HEAD of a repo (device repo, submodules) for the run's identity record
+* random order on record: when pytest-randomly is active, its seed lands in the junit XML as the
+  testsuite property ``randomly_seed`` (the seed policy: random every run, never fixed, always
+  recorded; reproduce with ``--randomly-seed=<n>``)
 
 Load from a suite's ``conftest.py``, one of two ways::
 
@@ -35,6 +38,22 @@ if TYPE_CHECKING:
     import pytest
 
 PROOF_RE = re.compile(r"ALX(\d+)_P(\d+)")
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    """Record pytest-randomly's seed as the junit testsuite property ``randomly_seed``.
+
+    Only when both are active: pytest-randomly (the option exists) and the junit report
+    (``--junitxml``). The module stays importable without pytest (the install smoke of BUILD imports
+    it), so the junit plugin is reached through the plugin manager, not imported.
+    """
+    config = session.config
+    seed = config.getoption("randomly_seed", default=None)
+    junitxml = config.pluginmanager.get_plugin("junitxml")  # a pytest builtin, always registered
+    xml = config.stash.get(getattr(junitxml, "xml_key"), None)  # noqa: B009 - reached, not imported
+    if seed is None or xml is None:
+        return
+    xml.add_global_property("randomly_seed", str(seed))
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:

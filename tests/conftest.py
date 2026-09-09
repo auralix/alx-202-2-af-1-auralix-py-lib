@@ -6,4 +6,7 @@ junit property) is exercised by this very suite. No instrument, no target: every
 transport defined in its test file.
 """
 
-pytest_plugins = ("alx.verify.evidence",)
+pytest_plugins = (
+    "alx.verify.evidence",
+    "pytester",
+)  # pytester: run a nested pytest to test the plugin itself

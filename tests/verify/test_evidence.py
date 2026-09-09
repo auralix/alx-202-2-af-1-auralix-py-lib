@@ -6,6 +6,8 @@ Proofs (ALX-1544):
   P62 git_head gives the short HEAD of a repo and "?" outside one
   P63 run_dir honours ALX_HIL_RUN_DIR, else builds <test_dir>/build/runs/<12-digit timestamp>
   P64 loaded through pytest_plugins (this suite's conftest), the hook tags THIS test with its proof token
+  P148 pytest-randomly's seed is recorded as the junit testsuite property randomly_seed; without the plugin
+       nothing is recorded (the seed policy: random every run, always in the evidence, never fixed)
 """
 
 import re
@@ -70,3 +72,27 @@ def test_ALX1544_P63_run_dir_from_the_launcher_or_a_timestamp(tmp_path, monkeypa
 def test_ALX1544_P64_plugin_loaded_by_pytest_plugins_tags_this_test(request):
     assert ("proof", "ALX-1544-P64") in request.node.user_properties
     assert ("req", "ALX-1544-P64") in request.node.user_properties
+
+
+def _nested_run(pytester, *args, junit=True):
+    pytester.makepyfile(test_nested="def test_ALX1544_P148_nested():\n    assert True\n")
+    report = pytester.path / "junit.xml"
+    report.unlink(missing_ok=True)
+    junit_args = ["-o", "junit_family=xunit1", f"--junitxml={report}"] if junit else []
+    # in-process, so the plugin code the nested session runs counts for this suite's coverage
+    result = pytester.runpytest_inprocess("-p", "alx.verify.evidence", *junit_args, *args)
+    result.assert_outcomes(passed=1)
+    return report.read_text(encoding="utf-8") if junit else ""
+
+
+def test_ALX1544_P148_random_seed_recorded_as_testsuite_property_only_when_randomly_is_active(
+    pytester,
+):
+    with_seed = _nested_run(pytester, "-p", "randomly", "--randomly-seed=4711")
+    assert '<property name="randomly_seed" value="4711"' in with_seed
+    assert '<property name="proof" value="ALX-1544-P148"' in with_seed
+    without = _nested_run(pytester, "-p", "no:randomly")
+    assert "randomly_seed" not in without
+    _nested_run(
+        pytester, "-p", "randomly", "--randomly-seed=4711", junit=False
+    )  # no report: nothing to record
