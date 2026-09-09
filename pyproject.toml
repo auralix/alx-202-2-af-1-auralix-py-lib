@@ -76,10 +76,9 @@ select = [
     "PT", "ARG", "PTH", "TC", "LOG", "G", "DTZ", "ICN",  # pytest style, unused args, pathlib, typing imports, logging, datetime, import names
     "PLE", "PLW", "PLC",                               # pylint errors, warnings, conventions (no complexity metrics)
 ]
-ignore = [
-    "S603",     # subprocess without shell=True: the library exists to run bench tools by argv (JLink, gdb, git, tasklist)
-    "S607",     # tools by bare name: which binary is on PATH is bench configuration (ALX_HIL_* where a path is needed)
-]
+# No global waiver. A rule that has to yield yields on the line it fires on, with its reason there
+# (`# noqa: <rule> - <why>`); RUF100 deletes the waiver as soon as the line no longer needs it.
+ignore = []
 
 [tool.ruff.lint.pydocstyle]
 convention = "pep257"

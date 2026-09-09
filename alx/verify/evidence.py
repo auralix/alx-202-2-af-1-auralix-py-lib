@@ -70,8 +70,10 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
 def git_head(path: str | Path) -> str:
     """Return the short HEAD of the repo at ``path``, ``"?"`` when not a repo or git is missing."""
     try:
-        result = subprocess.run(
-            ["git", "-C", str(path), "rev-parse", "--short", "HEAD"],
+        result = subprocess.run(  # noqa: S603 - fixed argv, no shell; a read-only git query
+            # S607 waived on the next line: the git on PATH is the developer's own, and the wrong
+            # one can only misreport a hash - this query writes nothing and decides nothing.
+            ["git", "-C", str(path), "rev-parse", "--short", "HEAD"],  # noqa: S607
             capture_output=True,
             text=True,
             check=True,

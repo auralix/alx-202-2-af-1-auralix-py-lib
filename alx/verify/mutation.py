@@ -83,7 +83,7 @@ def universalmutator(source: Path, mutant_dir: Path) -> list[Path]:
     exe = shutil.which("mutate") or str(Path(sys.executable).with_name("mutate"))
     mutant_dir.mkdir(parents=True, exist_ok=True)
     try:
-        result = subprocess.run(
+        result = subprocess.run(  # noqa: S603 - fixed argv, no shell; exe is resolved above
             [exe, str(source), "--mutantDir", str(mutant_dir), "--noCheck"],
             capture_output=True,
             text=True,
@@ -173,7 +173,8 @@ def fingerprint_file(path: Path) -> str | None:
 def command(template: str, root: Path, **fields: Path) -> subprocess.CompletedProcess[str]:
     """Run a hook command template in ``root``; ``{mutant}`` and ``{source}`` are POSIX paths."""
     argv = shlex.split(template.format(**{k: v.as_posix() for k, v in fields.items()}))
-    return subprocess.run(argv, cwd=root, capture_output=True, text=True, check=False)
+    # the template comes from the lane that started the run (a noxfile), never from mutated content
+    return subprocess.run(argv, cwd=root, capture_output=True, text=True, check=False)  # noqa: S603
 
 
 def check_command(template: str, root: Path) -> Callable[[Path], bool]:

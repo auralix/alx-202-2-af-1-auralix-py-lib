@@ -16,7 +16,8 @@ Proofs (ALX-1544):
   P88 main(): run drives SerialLogger.run, status exits non-zero when nothing runs
   P89 the log file is named after the folder
   P90 a detached logger that dies at start raises and leaves no PID file
-  P91 _pid_alive / _pid_kill drive the Windows process tools (tasklist filter, taskkill /F)
+  P91 _pid_alive / _pid_kill drive the Windows process tools (tasklist filter, taskkill /F) named by
+      absolute System32 path, so PATH cannot decide which binary a bench runs
   P92 main(): start reports the PID and the log path
   P93 a port that never opens is logged with the retry period; stop() is idempotent
   P94 a partial line still pending at stop is flushed as "(partial)"
@@ -30,6 +31,7 @@ import re
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 import pytest
 import serial
@@ -276,15 +278,21 @@ def test_ALX1544_P91_pid_alive_and_kill_use_the_windows_process_tools(monkeypatc
 
     def fake_run(cmd, **kw):
         calls.append(cmd)
-        out = "python.exe    4242 Console   1   20,000 K\n" if cmd[0] == "tasklist" else ""
+        out = "python.exe    4242 Console   1   20,000 K\n" if "tasklist" in cmd[0] else ""
         return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr="")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     assert sl._pid_alive(4242) is True
     assert sl._pid_alive(4243) is False
-    assert calls[0][:3] == ["tasklist", "/FI", "PID eq 4242"]
+    assert calls[0][1:] == ["/FI", "PID eq 4242", "/NH"]
     sl._pid_kill(4242)
-    assert calls[-1] == ["taskkill", "/PID", "4242", "/F"]
+    assert calls[-1][1:] == ["/PID", "4242", "/F"]
+    # both tools are named by absolute path: PATH must not decide which binary a bench runs
+    for argv, tool in ((calls[0], "tasklist.exe"), (calls[-1], "taskkill.exe")):
+        exe = Path(argv[0])
+        assert exe.is_absolute()
+        assert exe.name == tool
+        assert exe.is_file(), f"{exe} is not the real system tool"
 
 
 def test_ALX1544_P92_main_start_reports_pid_and_log(tmp_path, monkeypatch, capsys):

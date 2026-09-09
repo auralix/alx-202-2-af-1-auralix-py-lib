@@ -91,7 +91,7 @@ class JLink:
         log.debug(
             "J-Link %s: %s", script_name, script.read_text(encoding="ascii").replace("\n", " | ")
         )
-        result = subprocess.run(
+        result = subprocess.run(  # noqa: S603 - argv() builds it from the configured Commander
             self.argv(script), capture_output=True, text=True, timeout=timeout_s, check=False
         )
         if "Cannot connect" in result.stdout or result.returncode != 0:

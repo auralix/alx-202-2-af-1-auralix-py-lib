@@ -239,12 +239,20 @@ def _pid_kill_posix(pid: int) -> None:  # pragma: no cover - POSIX, the bench ru
     os.kill(pid, signal.SIGTERM)
 
 
+def _system32(tool: str) -> str:
+    """Absolute path of a Windows system tool, so PATH cannot decide which binary runs."""
+    return str(Path(os.environ["SYSTEMROOT"]) / "System32" / f"{tool}.exe")
+
+
 def _pid_alive(pid: int) -> bool:
     """Whether the process ``pid`` runs: tasklist filtered by PID on Windows, signal 0 elsewhere."""
     if sys.platform != "win32":  # pragma: no cover - POSIX, the bench runs Windows
         return _pid_alive_posix(pid)
-    out = subprocess.run(
-        ["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True, text=True, check=False
+    out = subprocess.run(  # noqa: S603 - fixed argv, no shell; the tool is an absolute system path
+        [_system32("tasklist"), "/FI", f"PID eq {pid}", "/NH"],
+        capture_output=True,
+        text=True,
+        check=False,
     ).stdout
     return f" {pid} " in out
 
@@ -254,7 +262,9 @@ def _pid_kill(pid: int) -> None:
     if sys.platform != "win32":  # pragma: no cover - POSIX, the bench runs Windows
         _pid_kill_posix(pid)
         return
-    subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True, check=False)
+    subprocess.run(  # noqa: S603 - fixed argv, no shell; the tool is an absolute system path
+        [_system32("taskkill"), "/PID", str(pid), "/F"], capture_output=True, check=False
+    )
 
 
 def status(log_dir: str | Path) -> Status:
@@ -304,7 +314,7 @@ def start_detached(
         "--heartbeat-s", str(heartbeat_s), "--retention-days", str(retention_days),
     ]  # fmt: skip
     if sys.platform == "win32":
-        proc = subprocess.Popen(
+        proc = subprocess.Popen(  # noqa: S603 - argv[0] is sys.executable, the rest is our own -m call
             args,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
@@ -312,7 +322,7 @@ def start_detached(
             creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
         )
     else:  # pragma: no cover - POSIX branch, not executed on the Windows bench
-        proc = subprocess.Popen(
+        proc = subprocess.Popen(  # noqa: S603 - argv[0] is sys.executable, the rest is our own -m call
             args,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,

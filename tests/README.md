@@ -213,6 +213,10 @@ its lane, never skips it.
   fixed and the marker is removed in the green commit.
 - CHARACTERIZATION tests (docstring prefix) pin behaviour that is not a requirement, so a change is
   noticed. Metric tests record numbers and assert only a sanity bound.
+- No global lint waiver: `[tool.ruff.lint] ignore` is empty, and a rule that has to yield yields on the
+  line it fires on, with its reason there (`# noqa: <rule> - <why>`). `RUF100` deletes the waiver as soon
+  as the line no longer needs it, so a waiver cannot outlive its reason. The per-file ignores for `tests/`
+  are the one exception, and they state a role, not a single line.
 - Sources, tests and documentation are pure ASCII (`alx.verify.ascii_gate`, ANALYZE Stage 0).
 - Markdown uses the heading levels `#` (title), `##` (chapter) and `####` (sub-chapter) only, ATX style, and
   no horizontal rules - chapters separate the text (`alx.verify.readme_gate`, ANALYZE Stage 0).

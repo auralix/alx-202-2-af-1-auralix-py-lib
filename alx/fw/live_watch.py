@@ -81,7 +81,7 @@ def resolve_addresses(gdb: str | Path, elf: str | Path, exprs: Iterable[str]) ->
     cmds: list[str] = []
     for expr in exprs:
         cmds += ["-ex", f"print/x &{expr}"]
-    result = subprocess.run(
+    result = subprocess.run(  # noqa: S603 - fixed argv, no shell; gdb is a caller-supplied path
         [str(gdb), "--batch", *cmds, str(elf)],
         capture_output=True,
         text=True,
