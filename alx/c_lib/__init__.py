@@ -9,4 +9,8 @@ protocols the C library defines (bus application layers, ...) belong here as wel
 sources into the DLL a pytest suite drives through ctypes (toolchain, rebuild check, compile
 database, the one-step and two-step recipes, the sanitizer and coverage variants). Every C
 repository with host tests needs it, and none of it is specific to one.
+
+``alx.c_lib.mutation_hooks``: what ``alx.verify.mutation`` must ask a compiler when the mutated
+language is C - is the mutant valid C, is its object code the same as the original's, and rebuild
+the binaries under test. A C repository names its own build groups and needs no script of its own.
 """
