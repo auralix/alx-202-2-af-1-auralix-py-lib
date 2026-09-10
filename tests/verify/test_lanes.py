@@ -18,6 +18,11 @@ def test_ALX1544_P138_evidence_dir_creates_build_lane_and_parts_and_is_idempoten
     assert out.is_dir()
     assert lanes.evidence_dir(tmp_path, "matrix", "py312") == out
     assert lanes.evidence_dir(tmp_path, "coverage") == tmp_path / "build" / "coverage"
+    # mutation-driven hardening: EVERY part, not just the first. `for part in parts` with a break
+    # after the first survived the suite, because no test passed more than one part.
+    deep = lanes.evidence_dir(tmp_path, "sanitize", "asan", "smoke")
+    assert deep == tmp_path / "build" / "sanitize" / "asan" / "smoke"
+    assert deep.is_dir()
 
 
 def test_ALX1544_P139_pytest_reports_put_junit_and_html_into_the_folder_as_posix_paths(tmp_path):

@@ -146,6 +146,16 @@ def test_ALX1544_P179_load_groups_imports_the_consumers_declaration(tmp_path):
     assert groups[0][0] == Path("a.dll")
     sys.path.remove(str(tmp_path))
 
+    # mutation-driven hardening: EVERY --sys-path entry is added, not just the first. A break
+    # after the first survived, because no test passed two - and --sys-path is repeatable.
+    other = tmp_path / "second"
+    other.mkdir()
+    (other / "elsewhere.py").write_text("GROUPS = []\n", encoding="ascii")
+    assert mh.load_groups("elsewhere:GROUPS", [tmp_path, other]) == []
+    for entry in (str(tmp_path), str(other)):
+        assert entry in sys.path
+        sys.path.remove(entry)
+
     with pytest.raises(ValueError, match="module:attribute"):
         mh.load_groups("no_colon_here")
     with pytest.raises(ValueError, match="module:attribute"):

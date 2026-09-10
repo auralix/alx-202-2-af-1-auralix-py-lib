@@ -243,6 +243,13 @@ def test_ALX1544_P133_llvm_export_metrics_selection_and_trailing_path_match(tmp_
         cob, 0.0, ["alx/errors.py", "nope.c"], ("lines", "functions")
     )
     assert failures == ["alx/errors.py: functions not in the report", "nope.c: not in the report"]
+    # mutation-driven hardening: EVERY missing metric of a file is reported, not just the first.
+    # A break after the first survived, because no test asked one file for two absent metrics.
+    _, both = coverage_gate.evaluate(cob, 0.0, ["alx/errors.py"], ("functions", "regions"))
+    assert both == [
+        "alx/errors.py: functions not in the report",
+        "alx/errors.py: regions not in the report",
+    ]
     with pytest.raises(ValueError, match="unknown metric"):
         coverage_gate.evaluate(cob, 0.0, (), ("lines", "mcdc"))
 
