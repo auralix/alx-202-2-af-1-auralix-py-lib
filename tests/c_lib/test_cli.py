@@ -26,6 +26,7 @@ Proofs (ALX-1544):
   P38 property: any JSON document, preceded by any brace-free trace and split at any byte boundaries,
       is framed exactly once and the trace is kept aside (Hypothesis)
   P39 read_until_quiet returns at total_s when the wire never goes quiet
+  P187 mutation-driven hardening: arriving data RESTARTS the quiet timer, so a steady stream is not cut off
   P120 mutation-driven hardening: latencies are milliseconds; read_until_quiet logs what it read as RX
 """
 
@@ -364,3 +365,38 @@ def test_ALX1544_P120_latency_is_milliseconds_and_read_until_quiet_logs_rx(sessi
     wire.chunks.append(b"boot banner\r\n")
     assert cli.read_until_quiet(total_s=1.0, quiet_s=0.05) == b"boot banner\r\n"
     assert "RX b'boot banner" in session.log()
+
+
+class StutteringWire(FakeWire):
+    """Data, then a gap SHORTER than quiet_s, over and over: never silent, never continuous."""
+
+    def __init__(self, chunks, gap_s):
+        super().__init__()
+        self.pending: list[bytes] = list(chunks)
+        self.gap_s = gap_s
+        self.turn = 0
+
+    def read(self, n: int) -> bytes:
+        self.turn += 1
+        if self.turn % 2 and self.pending:
+            return self.pending.pop(0)
+        time.sleep(self.gap_s)
+        return b""
+
+
+def test_ALX1544_P187_arriving_data_restarts_the_quiet_timer(tmp_path):
+    """Mutation-driven hardening: making `last_rx = time.monotonic()` dead survived the suite.
+
+    That line is the whole meaning of "quiet": without it the timer starts once and never
+    restarts, so a device streaming steadily is cut off quiet_s after the FIRST byte. P25 could
+    not see it (its wire goes silent immediately) and neither could P39 (its wire never goes
+    silent, so the quiet branch never runs). What catches it is a wire that stutters: gaps too
+    short to count as quiet, spread over far longer than quiet_s.
+    """
+    chunks = [b"chunk%d " % i for i in range(8)]
+    cli = Cli(StutteringWire(chunks, gap_s=0.03), tmp_path / "uart.log")
+    try:
+        out = cli.read_until_quiet(total_s=2.0, quiet_s=0.10)
+        assert out == b"".join(chunks), "every chunk, because the wire was never quiet for 0.10 s"
+    finally:
+        cli.close()

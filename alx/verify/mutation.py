@@ -163,15 +163,43 @@ def _does_nothing(statement: ast.stmt) -> bool:
     )
 
 
-def _drop_dead_statements(tree: ast.AST) -> ast.AST:
-    """Remove statements that do nothing, and a ``continue`` that ends a loop body.
+def _strip_tail_continue(statements: list[ast.stmt]) -> list[ast.stmt]:
+    """Drop a ``continue`` that can only be reached as the last thing an iteration does.
 
-    Measured on the first full run of this package: a third of the 242 survivors were mutants of
-    exactly these shapes. universalmutator replaces a docstring with ``pass`` and appends
-    ``continue`` to loop bodies, and neither changes what the code does - so neither should reach
-    a survivor list a human has to read. Dropping them is exact, not a heuristic: ``pass`` and a
-    bare ``...`` execute nothing, and a ``continue`` as the last statement of a loop body goes
-    where control was going anyway.
+    Tail position is not just "last statement of the loop body". Most of the ones a generator
+    produces sit at the end of an ``if`` that is itself last, and control was going to the top of
+    the loop from there anyway. The recursion follows exactly the constructs where that holds:
+    an ``if`` (either arm) and a ``with``, whose context manager exits either way.
+
+    NOT followed: a nested loop, because a ``continue`` there belongs to the inner loop and is
+    handled when that loop is reached; and ``try``, where ``finally`` and the handlers make
+    "the same thing happens" a claim worth more thought than a filter should make.
+    """
+    if not statements:
+        return statements
+    last = statements[-1]
+    if isinstance(last, ast.Continue):
+        return statements[:-1]
+    if isinstance(last, ast.If):
+        last.body = _strip_tail_continue(last.body)
+        last.orelse = _strip_tail_continue(last.orelse)
+    elif isinstance(last, (ast.With, ast.AsyncWith)):
+        last.body = _strip_tail_continue(last.body)
+    return statements
+
+
+def _drop_dead_statements(tree: ast.AST) -> ast.AST:
+    """Remove statements that do nothing, and a ``continue`` in tail position of a loop.
+
+    Measured on the first full run of this package: a large share of the 242 survivors were
+    mutants of exactly these shapes. universalmutator replaces a docstring with ``pass`` and
+    appends ``continue`` inside loop bodies, and neither changes what the code does - so neither
+    should reach a survivor list a human has to read. Dropping them is exact, not a heuristic:
+    ``pass`` and a bare ``...`` execute nothing, and a ``continue`` in tail position goes where
+    control was going anyway.
+
+    Two passes, and the order matters: the dead statements go first, because a ``continue`` is
+    only recognisably last once the ``pass`` after it is gone.
 
     Deliberately NOT done here: reordering keyword arguments, which the same run produced 19 of.
     It is equivalent only while the argument expressions have no side effects, and a tool that
@@ -180,13 +208,11 @@ def _drop_dead_statements(tree: ast.AST) -> ast.AST:
     for node in ast.walk(tree):
         for field in ("body", "orelse", "finalbody"):
             statements = getattr(node, field, None)
-            if not isinstance(statements, list):
-                continue
-            kept = [s for s in statements if not _does_nothing(s)]
-            in_loop_body = field == "body" and isinstance(node, (ast.For, ast.AsyncFor, ast.While))
-            if in_loop_body and kept and isinstance(kept[-1], ast.Continue):
-                kept = kept[:-1]
-            setattr(node, field, kept)
+            if isinstance(statements, list):
+                setattr(node, field, [s for s in statements if not _does_nothing(s)])
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.For, ast.AsyncFor, ast.While)):
+            node.body = _strip_tail_continue(node.body)
     return tree
 
 

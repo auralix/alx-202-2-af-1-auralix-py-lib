@@ -27,6 +27,8 @@ Proofs (ALX-1544):
        a broken check hook must not read as a lane that passed
   P186 statements that do nothing are dropped from the fingerprint (a docstring replaced by pass, a bare ...,
        a continue ending a loop body) while a break, a continue that is not last, and any real change are kept
+  P188 a continue in TAIL position of a loop is dropped too - at the end of an if arm or a with that is itself
+       last - while one inside a nested loop or a try, or not last, is kept
 """
 
 import json
@@ -637,3 +639,38 @@ def test_ALX1544_P186_statements_that_do_nothing_are_dropped_from_the_fingerprin
     assert fp("def f():\n    return 1\n", "m.py") != fp("def f():\n    pass\n", "m.py"), (
         "deleting a return is not deleting nothing"
     )
+
+
+def test_ALX1544_P188_a_continue_in_tail_position_of_a_loop_is_dropped():
+    """Most appended `continue` mutants end a nested block, not the loop body itself.
+
+    Control was going to the top of the iteration either way, so they are equivalent - but only
+    where that is certain. A nested loop owns its own `continue`, and a `try` can have a `finally`
+    and handlers, so neither is followed.
+    """
+    fp = mutation.fingerprint
+
+    # dropped: tail position of the loop, however deeply nested inside if and with blocks
+    assert fp("for x in y:\n    if c:\n        z(x)\n", "m.py") == fp(
+        "for x in y:\n    if c:\n        z(x)\n        continue\n", "m.py"
+    )
+    assert fp("for x in y:\n    if c:\n        a()\n    else:\n        b()\n", "m.py") == fp(
+        "for x in y:\n    if c:\n        a()\n    else:\n        b()\n        continue\n", "m.py"
+    )
+    assert fp("for x in y:\n    with open(x) as f:\n        z(f)\n", "m.py") == fp(
+        "for x in y:\n    with open(x) as f:\n        z(f)\n        continue\n", "m.py"
+    )
+    assert fp("while c:\n    if a:\n        if b:\n            z()\n", "m.py") == fp(
+        "while c:\n    if a:\n        if b:\n            z()\n            continue\n", "m.py"
+    )
+
+    # kept: not tail position, or not certain
+    assert fp("for x in y:\n    if c:\n        z(x)\n    w(x)\n", "m.py") != fp(
+        "for x in y:\n    if c:\n        z(x)\n        continue\n    w(x)\n", "m.py"
+    ), "something still runs after it"
+    assert fp("for x in y:\n    try:\n        z(x)\n    finally:\n        c()\n", "m.py") != fp(
+        "for x in y:\n    try:\n        z(x)\n        continue\n    finally:\n        c()\n", "m.py"
+    ), "a try is not followed: finally and the handlers make it a real question"
+    assert fp("for x in y:\n    if c:\n        z(x)\n", "m.py") != fp(
+        "for x in y:\n    if c:\n        z(x)\n        break\n", "m.py"
+    ), "a break in the same slot stops the loop"
