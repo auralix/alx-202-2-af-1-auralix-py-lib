@@ -45,7 +45,7 @@ dev = [                                      # every lane: `uv sync --locked --e
 ]
 
 [tool.setuptools]
-packages = ["alx", "alx.debug_probe", "alx.psu", "alx.c_lib", "alx.fw", "alx.verify"]
+packages = ["alx", "alx.debug_probe", "alx.psu", "alx.can", "alx.c_lib", "alx.fw", "alx.verify"]
 
 [tool.setuptools.package-data]
 # the consumer ruff profile is shipped, not generated: a C repo's ANALYZE stage passes it to ruff
@@ -97,7 +97,7 @@ docstring-code-format = true
 # ANALYZE stage 0 - spelling (codespell)
 [tool.codespell]
 skip = "./.venv,./.nox,./build,./uv.lock,./.git,./.mypy_cache,./.ruff_cache,./.hypothesis"
-ignore-words-list = "ser,caf,fo"           # ser = the serial port variable; caf = test bytes; Fo = clang-cl's object output flag
+ignore-words-list = "ser,caf,fo,technik"   # ser = the serial port variable; caf = test bytes; Fo = clang-cl's object output flag; Technik = the CAN vendor's registered name
 
 # ANALYZE stage 1 - types (mypy, strict on the package; tests are checked but need no annotations)
 [tool.mypy]

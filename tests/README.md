@@ -28,6 +28,10 @@ its lane, never skips it.
   or two related modules, a plain module for a single tool. Public API of a package in its `__init__.py`.
   - `alx.debug_probe`: facade `open()`, contracts `DebugProbe` and `MemoryAccess`, adapter `jlink`
   - `alx.psu`: instrument drivers (`owon_p4603`); a facade follows with the second model
+  - `alx.can`: facade `open()`, contract `CanBus`, the `CanFrame` value type and the window helpers
+    (`periods_ms`, `group_by_id`), adapter `pcan` over the vendor's PCANBasic library through
+    `ctypes`. Classic CAN only, and payload decoding stays in the device repository that defines the
+    signal layout
   - `alx.c_lib`: clients of the Auralix C Library protocols - `cli` (framed JSON CLI over a serial
     port, keeps trace bytes aside), `trace` (boot banner and `[ts] [LVL] text` line parsers) - and
     `host_build`, the other side of the same relationship: the host build that turns C sources into

@@ -2,7 +2,8 @@
 """Auralix Python Library: bench and HIL mechanisms shared by the device repos.
 
 Packages by family: ``alx.debug_probe`` (the debug probe facade and one adapter per tool, e.g.
-``jlink``), ``alx.psu`` (one adapter per power supply model), ``alx.c_lib`` (clients of the Auralix
+``jlink``), ``alx.psu`` (one adapter per power supply model), ``alx.can`` (the CAN interface facade
+and one adapter per dongle, e.g. ``pcan``), ``alx.c_lib`` (clients of the Auralix
 C Library protocols: ``cli``, ``trace``), ``alx.fw`` (the firmware artifact and its runtime state:
 ``live_watch``), ``alx.verify`` (evidence of a run and the lane gates). Single tools stay top level:
 ``alx.serial_logger`` records a UART for days. ``alx.errors`` holds the exception hierarchy. Product

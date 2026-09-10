@@ -19,3 +19,7 @@ class InstrumentError(AlxError):
 
 class CliError(AlxError):
     """The device CLI gave no response where one was required (``Cli.command_json``)."""
+
+
+class CanError(AlxError):
+    """A CAN interface refused a frame, could not open a channel, or saw no expected traffic."""
