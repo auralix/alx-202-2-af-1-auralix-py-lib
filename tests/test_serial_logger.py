@@ -25,6 +25,7 @@ Proofs (ALX-1544):
   P125 mutation-driven hardening: a PID file with garbage reads as no pid, never a crash
   P126 mutation-driven hardening: a stale PID file (process gone) is cleaned without a kill
   P127 mutation-driven hardening: CLI defaults (115200 baud, 600 s heartbeat, 90 days) and --baud is an int
+  P185 mutation-driven hardening: the run loop survives a partial flush - a break there would end the logger at the first idle gap
 """
 
 import re
@@ -110,6 +111,20 @@ def test_ALX1544_P80_lines_are_timestamped_and_bracketed_by_marks(tmp_path):
 def test_ALX1544_P81_partial_line_is_flushed_after_idle(tmp_path):
     _logger, text = run_logger(tmp_path, [FakePort([b"no newline"])], idle_flush_s=0.05)
     assert "] (partial) no newline" in text
+
+
+def test_ALX1544_P185_the_logger_keeps_reading_after_a_partial_flush(tmp_path):
+    """Mutation-driven hardening: a `break` after the partial flush survived the whole suite.
+
+    It would end the logging thread at the first idle gap - the one thing a days-long soak logger
+    must never do. P81 could not see it, because it asks only whether the partial line was
+    written, and the mutant writes it before leaving. What pins the loop is what comes AFTER.
+    """
+    port = FakePort([b"no newline", 0.1, b"and then more\r\n"])
+    logger, text = run_logger(tmp_path, [port], run_s=0.5, idle_flush_s=0.05)
+    assert "] (partial) no newline" in text, "the partial line is still flushed"
+    assert "] and then more" in text, "and the logger is still there to log what follows"
+    assert logger.lines == 2
 
 
 def test_ALX1544_P82_silence_produces_heartbeats(tmp_path):
