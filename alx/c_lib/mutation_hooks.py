@@ -74,7 +74,6 @@ def syntax_ok(
     std: str = "gnu99",
     includes: Iterable[Path | str] = (),
     defines: Iterable[str] = (),
-    timeout_s: float = 120.0,
 ) -> bool:
     """Whether ``path`` is valid C: a front-end run, no code generated and nothing written.
 
@@ -82,7 +81,7 @@ def syntax_ok(
     it says nothing about the tests either way.
     """
     argv = _argv(toolchain, "-fsyntax-only", str(path), std=std, includes=includes, defines=defines)
-    return _run(toolchain, argv, timeout_s) == 0
+    return _run(argv) == 0
 
 
 def strip_object_timestamp(data: bytes) -> bytes:
@@ -105,7 +104,6 @@ def object_fingerprint(
     std: str = "gnu99",
     includes: Iterable[Path | str] = (),
     defines: Iterable[str] = (),
-    timeout_s: float = 120.0,
 ) -> str | None:
     """Return the hash of ``path``'s object code, or None when it does not compile.
 
@@ -123,15 +121,21 @@ def object_fingerprint(
         toolchain, "-c", "-O1", "-o", str(obj), str(source),
         std=std, includes=includes, defines=defines,
     )  # fmt: skip
-    if _run(toolchain, argv, timeout_s) != 0:
+    if _run(argv) != 0:
         return None
     return hashlib.sha256(strip_object_timestamp(obj.read_bytes())).hexdigest()
 
 
-def _run(toolchain: host_build.Toolchain, argv: Sequence[str], timeout_s: float) -> int:
-    """Run one compiler call in the build environment and return its exit code."""
-    del timeout_s  # the driver bounds the whole hook; the compiler is not the slow part
-    return host_build.run(argv, env=toolchain.environment()).returncode
+def _run(argv: Sequence[str]) -> int:
+    """Run one compiler call and return its exit code, in the environment as it stands.
+
+    NOT in the build environment, deliberately. Capturing that means running vcvars64.bat, and a
+    hook is a fresh process per mutant: measured 1.34 s per call with it against 0.22 s without,
+    which over the ~1400 invocations of one C source is twenty-odd minutes of batch file. clang
+    finds the MSVC headers by itself, so these two hooks never needed it - only the rebuild hook
+    does, and it gets one through the consumer's own build recipe.
+    """
+    return host_build.run(argv).returncode
 
 
 Group = tuple[Path, "Iterable[Path]", "Callable[[], None]"]

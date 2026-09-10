@@ -13,6 +13,8 @@ Proofs (ALX-1544):
   P179 load_groups imports the consumer's declaration by module:attribute and says so when it cannot
   P180 rebuild_groups builds only stale targets and reports the first failure with the target name
   P181 main(): the three subcommands, their exit codes, and the hash on stdout
+  P183 the asking hooks do NOT capture the build environment: vcvars costs 1.1 s a call and a hook is one process
+       per mutant, so paying it ~1400 times per source is twenty minutes of batch file for nothing
 """
 
 import os
@@ -34,11 +36,13 @@ class FakeClang:
 
     def __init__(self, code=0, writes=None):
         self.calls: list[list[str]] = []
+        self.envs: list[object] = []
         self.code = code
         self.writes = writes
 
     def __call__(self, argv, cwd=None, env=None):
         self.calls.append(list(argv))
+        self.envs.append(env)
         if self.writes is not None and "-o" in argv:
             Path(argv[argv.index("-o") + 1]).write_bytes(self.writes)
         return subprocess.CompletedProcess(list(argv), self.code, stdout="", stderr="")
@@ -211,3 +215,23 @@ def test_ALX1544_P181_main_runs_the_three_hooks_and_reports(clang, tmp_path, cap
         mh.main(["rebuild", "--groups", "groups_bad:DLL_GROUPS", "--sys-path", str(tmp_path)]) == 1
     )
     assert "rebuild failed (gone.dll)" in capsys.readouterr().out
+
+
+def test_ALX1544_P183_the_asking_hooks_do_not_capture_the_build_environment(clang, tmp_path):
+    """Measured 10.09: 1.34 s per call with the vcvars environment, 0.22 s without it.
+
+    A hook runs once per mutant in its own process, so the capture is paid again every time - it
+    turned one C source's mutate run from 9 minutes into 29. These two hooks ask clang about a
+    SOURCE, and clang finds the MSVC headers by itself; only the rebuild hook needs a build
+    environment, and it gets one from the consumer's own recipe.
+    """
+    fake, toolchain = clang
+    source = tmp_path / "m.c"
+    source.write_bytes(b"int a = 1;\n")
+
+    mh.syntax_ok(toolchain, source)
+    assert fake.envs[-1] is None, "check must not hand the compiler a captured environment"
+
+    fake.writes = COFF
+    mh.object_fingerprint(toolchain, source, tmp_path / "w")
+    assert fake.envs[-1] is None, "fingerprint must not either"
