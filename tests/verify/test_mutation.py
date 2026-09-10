@@ -23,6 +23,8 @@ Proofs (ALX-1544):
   P135 a root-level C source with a Test/ folder: mirror test_<stem>.py, suffix-aware mutant files, dotted key
   P136 the command hooks from templates ({mutant} / {source} replaced, run in the root): check, fingerprint,
        rebuild; main() wires --tests-dir, --check-cmd, --fingerprint-cmd, --rebuild-cmd
+  P182 a run where the generator produced mutants and NOT ONE reached the tests says so and exits non-zero:
+       a broken check hook must not read as a lane that passed
 """
 
 import json
@@ -340,6 +342,9 @@ def test_ALX1544_P112_main_runs_every_source_and_reports_or_fails(tmp_path, monk
         def report(self):
             return "REPORT\n"
 
+        def nothing_tested(self):
+            return None
+
         def start(self):
             return ["alx/left.py"]
 
@@ -529,6 +534,9 @@ def test_ALX1544_P136_command_hooks_and_main_wiring(tmp_path, monkeypatch, capsy
         def report(self):
             return "REPORT\n"
 
+        def nothing_tested(self):
+            return None
+
     monkeypatch.setattr(mutation, "MutationRun", FakeRun)
     argv = [
         "--root", str(tmp_path), "--tests-dir", "Test",
@@ -547,3 +555,39 @@ def test_ALX1544_P136_command_hooks_and_main_wiring(tmp_path, monkeypatch, capsy
     assert defaults["rebuild"] is None
     assert defaults["fingerprint_of"] is mutation.fingerprint_file
     assert capsys.readouterr().out.count("REPORT") == 2
+
+
+def test_ALX1544_P182_a_run_that_tested_nothing_says_so_and_fails(tmp_path):
+    """A broken check hook files every mutant STILLBORN; that is not a pass, it is no measurement."""
+    src = project(tmp_path)
+    out = tmp_path / "out"
+
+    # every mutant rejected by the check hook = what a wrong compiler path looks like from here
+    run = MutationRun(
+        tmp_path, out, generate=fake_generate, run=ScriptedRunner(src), check=lambda _m: False
+    )
+    run.run_source(src)
+    counts = run.counts()
+    assert counts["STILLBORN"] == sum(counts.values()) > 0, "everything was filed stillborn"
+    assert run.kill_rate() is None, "the old report said only this, and exited 0"
+
+    reason = run.nothing_tested()
+    assert reason is not None
+    assert "none reached the tests" in reason
+    assert "the check hook is the suspect, not the suite" in reason
+    assert "NOTHING TESTED:" in run.report()
+
+    # one mutant that does reach the tests is enough to make the run a measurement again
+    healthy = MutationRun(
+        tmp_path, tmp_path / "out2", generate=fake_generate, run=ScriptedRunner(src)
+    )
+    healthy.run_source(src)
+    assert healthy.nothing_tested() is None
+    assert "NOTHING TESTED" not in healthy.report()
+
+    # a source the generator produced nothing for is not a broken hook, so it is not flagged
+    empty = MutationRun(
+        tmp_path, tmp_path / "out3", generate=lambda s, d: [], run=ScriptedRunner(src)
+    )
+    empty.run_source(src)
+    assert empty.nothing_tested() is None

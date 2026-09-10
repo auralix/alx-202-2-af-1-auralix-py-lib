@@ -411,6 +411,28 @@ class MutationRun:
         tested = counts["KILLED"] + counts["SURVIVED"]
         return None if tested == 0 else 100.0 * counts["KILLED"] / tested
 
+    def nothing_tested(self) -> str | None:
+        """Return why this run proves nothing, or None when a mutant did reach the tests.
+
+        A run where the generator produced mutants and NOT ONE of them ever reached the suite has
+        not measured the suite - it has measured a broken hook. That is exactly what a wrong
+        compiler path looks like from in here: every mutant fails its syntax check, every one is
+        filed STILLBORN, and the report reads "kill rate: n/a" beside a four-figure count. Seen for
+        real on 10.09 in the C library, and a lane that tested nothing must not be able to pass.
+        """
+        counts = self.counts()
+        if counts["KILLED"] + counts["SURVIVED"] + counts["KILLED_COMPILE"] > 0:
+            return None
+        generated = sum(counts.values())
+        if generated == 0:
+            return None  # nothing was generated either: an empty source, not a broken hook
+        blamed = "check" if counts["STILLBORN"] == generated else "check / fingerprint"
+        return (
+            f"{generated} mutants generated and none reached the tests "
+            f"({counts['STILLBORN']} stillborn, {counts['EQUIVALENT']} equivalent) - "
+            f"the {blamed} hook is the suspect, not the suite"
+        )
+
     def report(self) -> str:
         """Write ``report.txt`` + ``results.json`` under ``out`` and return the report text."""
         counts = self.counts()
@@ -423,6 +445,9 @@ class MutationRun:
             "kill rate: " + ("n/a" if rate is None else f"{rate:.1f}%"),
             "",
         ]
+        broken = self.nothing_tested()
+        if broken is not None:
+            lines.insert(1, f"NOTHING TESTED: {broken}")
         lines.extend(
             f"SURVIVED  {o.source}  {o.mutant}  -> survivors/{o.diff}"
             for o in self.outcomes
@@ -498,7 +523,7 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.write(f"MUTATION RUN FAILED: {ex}\n")
         return 1
     sys.stdout.write(run.report())
-    return 0
+    return 0 if run.nothing_tested() is None else 1
 
 
 if __name__ == "__main__":  # pragma: no cover
