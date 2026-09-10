@@ -22,6 +22,8 @@ from typing import Any, Protocol
 
 from alx.errors import CliError
 
+DEFAULT_TERM = b"\r"
+
 
 class Wire(Protocol):
     """What ``Cli`` needs from the transport; a pyserial ``Serial`` with a short timeout fits."""
@@ -46,9 +48,17 @@ class Wire(Protocol):
 class Cli:
     """One serial CLI session over an open pyserial port (read timeout ~0.05 s; readers poll)."""
 
-    def __init__(self, ser: Wire, log_path: str | Path):
-        """Bind the session to the open transport ``ser``; the wire log appends to ``log_path``."""
+    def __init__(self, ser: Wire, log_path: str | Path, term: bytes = DEFAULT_TERM):
+        """Bind the session to the open transport ``ser``; the wire log appends to ``log_path``.
+
+        ``term`` is the line terminator every command helper appends, and the one ``sync`` sends on
+        its own. It is a parameter because the C library's own contract changed: a recent library
+        ends a line on a single CR or LF, an older one waits for the CR LF pair and answers nothing
+        at all to a bare CR. A bench that has to drive both - comparing a release image against the
+        one that replaces it - needs to say which it is talking to.
+        """
         self.ser = ser
+        self.term = term
         self._t0 = time.monotonic()
         # the wire log lives as long as the session; close() closes it
         self._log = Path(log_path).open("a", encoding="utf-8")  # noqa: SIM115
@@ -196,8 +206,8 @@ class Cli:
     def _ascii(text: str | bytes) -> bytes:
         return text.encode("ascii") if isinstance(text, str) else text
 
-    def _cmd(self, name: str, term: bytes = b"\r") -> dict[str, Any]:
-        return self.command_json(name.encode("ascii") + term)
+    def _cmd(self, name: str, term: bytes | None = None) -> dict[str, Any]:
+        return self.command_json(name.encode("ascii") + (self.term if term is None else term))
 
     def help(self) -> dict[str, Any]:
         """Send ``help`` and return the parsed response (the command list, always pretty)."""
@@ -235,9 +245,12 @@ class Cli:
         """Send ``get-trig`` and return the parsed response."""
         return self._cmd("get-trig")
 
-    def set_param(self, key: str | bytes, val: str | bytes, term: bytes = b"\r") -> dict[str, Any]:
+    def set_param(
+        self, key: str | bytes, val: str | bytes, term: bytes | None = None
+    ) -> dict[str, Any]:
         """Send ``set-param --key <key> --val <val>`` and return the parsed response."""
-        line = b"set-param --key " + self._ascii(key) + b" --val " + self._ascii(val) + term
+        end = self.term if term is None else term
+        line = b"set-param --key " + self._ascii(key) + b" --val " + self._ascii(val) + end
         return self.command_json(line)
 
     def get_params(self) -> dict[str, Any]:
@@ -247,7 +260,7 @@ class Cli:
 
     def sync(self) -> None:
         """Sync both ends: a bare terminator flushes the device line buffer, then RX is drained."""
-        self.send(b"\r")
+        self.send(self.term)
         self.read_until_quiet(total_s=0.6, quiet_s=0.15)
         self.flush_rx()
 

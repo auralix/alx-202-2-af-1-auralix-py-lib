@@ -41,7 +41,7 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from alx.c_lib.cli import Cli
+from alx.c_lib.cli import DEFAULT_TERM, Cli
 from alx.c_lib.trace import parse_lines
 from alx.errors import CliError
 
@@ -400,3 +400,45 @@ def test_ALX1544_P187_arriving_data_restarts_the_quiet_timer(tmp_path):
         assert out == b"".join(chunks), "every chunk, because the wire was never quiet for 0.10 s"
     finally:
         cli.close()
+
+
+def test_ALX1553_P61_the_line_terminator_is_a_session_choice(tmp_path):
+    """The C library changed its own line contract, so a client that drives both must choose.
+
+    A recent library ends a line on a single CR or LF. An older one waits for the CR LF pair and
+    answers a bare CR with nothing at all - so a suite comparing a release image against the image
+    that replaces it cannot use one hard-coded terminator for both.
+    """
+    ok = b'{"status":"success"}TERM'.replace(b"TERM", b"\r\n")
+
+    crlf = FakeWire(responder=lambda _line: ok)
+    dev = Cli(crlf, tmp_path / "crlf.log", term=b"\r\n")
+    try:
+        assert dev.term == b"\r\n"
+        dev.id()
+        dev.set_param("K", "V")
+        dev.sync()
+        assert crlf.tx == [b"id\r\n", b"set-param --key K --val V\r\n", b"\r\n"]
+    finally:
+        dev.close()
+
+    default = FakeWire(responder=lambda _line: ok)
+    plain = Cli(default, tmp_path / "cr.log")
+    try:
+        assert plain.term == DEFAULT_TERM == b"\r"
+        plain.id()
+        plain.set_param("K", "V")
+        plain.sync()
+        assert default.tx == [b"id\r", b"set-param --key K --val V\r", b"\r"]
+    finally:
+        plain.close()
+
+    # a per-call terminator still wins, which is how a test probes the device's own line handling
+    override = FakeWire(responder=lambda _line: ok)
+    mixed = Cli(override, tmp_path / "mixed.log", term=b"\r\n")
+    try:
+        mixed.set_param("K", "V", term=b"\n")
+        mixed._cmd("id", term=b"\r")
+        assert override.tx == [b"set-param --key K --val V\n", b"id\r"]
+    finally:
+        mixed.close()
