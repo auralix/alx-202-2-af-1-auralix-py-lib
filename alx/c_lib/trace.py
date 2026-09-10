@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""Parsers for the Auralix C Library trace output: the boot banner, the identity block, trace lines.
+"""Parsers for the Auralix C Library trace output: the boot banner, the identity and reset blocks.
 
 The firmware writes trace lines on its debug UART unrequested, ``[<timestamp>] [<LEVEL>] <text>``,
 and right after a reset it prints who it is. On a shared UART these lines arrive between CLI
@@ -47,6 +47,20 @@ ID_START = "AlxId_Trace - START"
 ID_SECTIONS = {"FW:": "", "FW - Bootloader:": "boot_"}
 ID_FIELDS = ("artf", "name", "ver", "bin")
 ID_FIELD_RE = re.compile(r"^- (?P<key>[a-z_]+): (?P<val>.*)$")
+
+RST_START = "AlxRst_Trace - START"
+RST_FLAGS = {
+    "Software": "sw",
+    "nRST Pin": "rst_pin",
+    "Window Watchdog (WWDG)": "wwdg",
+    "Independent Watchdog (IWDG)": "iwdg",
+    "Low-power Management": "low_power_mgmt",
+    "Power-on (POR) / Brown-out (BOR)": "por_or_bor",
+    "Power-on (POR)": "por",
+    "Firewall": "firewall",
+    "Option Byte Loader": "option_byte_loader",
+}
+RST_FLAG_RE = re.compile(r"^- (?P<label>.+): (?P<val>[01])$")
 
 
 @dataclass(frozen=True)
@@ -117,3 +131,47 @@ def parse_id_trace(raw: bytes) -> dict[str, str]:
         if key in ident:
             ident[key.replace("bin", "hash7")] = ident[key].rsplit("_", 1)[-1].removesuffix(".bin")
     return ident
+
+
+def parse_rst_traces(raw: bytes) -> list[dict[str, bool]]:
+    """Extract every ``AlxRst_Trace`` reset-reason block, oldest first, ``[]`` when there is none.
+
+    The library prints one block per boot, listing the MCU's reset flags as they were when
+    ``AlxRst_Init`` read them::
+
+        AlxRst_Trace - START - STM32 Reset Reason:
+        - Software: 0
+        - nRST Pin: 1
+        - Power-on (POR): 0
+
+    Every block in ``raw`` is returned, because a device behind a bootloader prints two per
+    reset and the interesting question is usually how they differ. Keys are the C structure's
+    field names in snake case (``sw``, ``rst_pin``, ``wwdg``, ``iwdg``, ``low_power_mgmt``,
+    ``por_or_bor``, ``por``, ``firewall``, ``option_byte_loader``); a flag whose label this
+    module does not know is kept under the label itself rather than dropped, so a new MCU
+    family stays visible.
+
+    A block ends at the first line that is not ``- <label>: <0 or 1>``, which is what separates it
+    from the identity block that follows.
+
+    One caveat belongs with the numbers rather than with any product using them: on STM32 the
+    library's read of the flags CLEARS them, so only the first code to call ``AlxRst_Init`` after a
+    reset can see a reason. Anything that runs later - an application behind a bootloader, most of
+    all - reads a block of zeros no matter what caused the reset.
+    """
+    blocks: list[dict[str, bool]] = []
+    inside = False
+    for line in parse_lines(raw):
+        text = line.text.strip()
+        if text.startswith(RST_START):
+            blocks.append({})
+            inside = True
+            continue
+        if not inside:
+            continue
+        match = RST_FLAG_RE.match(text)
+        if match is None:
+            inside = False
+            continue
+        blocks[-1][RST_FLAGS.get(match["label"], match["label"])] = match["val"] == "1"
+    return blocks

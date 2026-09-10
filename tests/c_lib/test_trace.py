@@ -16,6 +16,9 @@ Proofs (ALX-1553):
       section arrives under boot_ keys
   P31 inventory lines outside the identity sections are ignored, and a transcript without the block
       gives {}
+  P101 parse_rst_traces reads an AlxRst_Trace block into the C structure's field names as booleans
+  P102 every block is returned, oldest first, and the identity block that follows does not leak in
+  P103 an unknown flag label is kept under its own label; no block gives []
 """
 
 import dataclasses
@@ -24,7 +27,14 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from alx.c_lib.trace import TraceLine, parse_banner, parse_id_trace, parse_line, parse_lines
+from alx.c_lib.trace import (
+    TraceLine,
+    parse_banner,
+    parse_id_trace,
+    parse_line,
+    parse_lines,
+    parse_rst_traces,
+)
 
 BANNER = (
     b"[2000-01-01 00:00:00.028] [INF] APP START\r\n"
@@ -178,3 +188,54 @@ def test_ALX1553_P31_inventory_is_ignored_and_no_block_gives_nothing():
     assert parse_id_trace(BANNER) == {}, "a product banner is not an AlxId_Trace block"
     assert parse_id_trace(b"") == {}
     assert parse_id_trace(b"[t] [INF] AlxId_Trace - START\r\n") == {}, "a block with no section"
+
+
+def _rst_block(flags, header="AlxRst_Trace - START - STM32 Reset Reason:"):
+    lines = [header, *[f"- {label}: {int(value)}" for label, value in flags.items()], ""]
+    return b"".join(f"[2000-01-01 00:00:00.000] [INF] {line}\r\n".encode("ascii") for line in lines)
+
+
+STM32F7_FLAGS = {
+    "Software": 0,
+    "nRST Pin": 1,
+    "Window Watchdog (WWDG)": 0,
+    "Independent Watchdog (IWDG)": 0,
+    "Low-power Management": 0,
+    "Power-on (POR) / Brown-out (BOR)": 1,
+    "Power-on (POR)": 1,
+}
+
+
+def test_ALX1553_P101_parse_rst_traces_reads_the_reset_reason_block():
+    assert parse_rst_traces(_rst_block(STM32F7_FLAGS)) == [
+        {
+            "sw": False,
+            "rst_pin": True,
+            "wwdg": False,
+            "iwdg": False,
+            "low_power_mgmt": False,
+            "por_or_bor": True,
+            "por": True,
+        }
+    ]
+
+
+def test_ALX1553_P102_every_block_is_returned_and_the_identity_block_does_not_leak_in():
+    # a device behind a bootloader prints two blocks per reset, and an AlxId_Trace block
+    # follows each one immediately - its '- name: X' lines look exactly like flag lines
+    # until the value is read.
+    boot = _rst_block({"Software": 1, "nRST Pin": 0}) + _id_block(*APP_ID, inventory=False)
+    app = _rst_block(STM32F7_FLAGS) + _id_block(*APP_ID, inventory=False)
+    blocks = parse_rst_traces(boot + app)
+    assert [len(block) for block in blocks] == [2, 7], "no identity field was taken for a flag"
+    assert blocks[0] == {"sw": True, "rst_pin": False}, "the bootloader's block comes first"
+    assert blocks[1]["por"] is True
+
+
+def test_ALX1553_P103_an_unknown_label_is_kept_and_no_block_gives_nothing():
+    # a family this module has never seen still reports its flags; losing them silently would be
+    # worse than an ugly key, because the value is the whole point of reading the block.
+    blocks = parse_rst_traces(_rst_block({"Software": 0, "Brand New Reason": 1}))
+    assert blocks == [{"sw": False, "Brand New Reason": True}]
+    assert parse_rst_traces(BANNER) == []
+    assert parse_rst_traces(b"") == []
