@@ -402,7 +402,7 @@ def test_ALX1544_P187_arriving_data_restarts_the_quiet_timer(tmp_path):
         cli.close()
 
 
-def test_ALX1553_P61_the_line_terminator_is_a_session_choice(tmp_path):
+def test_ALX1553_P100_the_line_terminator_is_a_session_choice(tmp_path):
     """The C library changed its own line contract, so a client that drives both must choose.
 
     A recent library ends a line on a single CR or LF. An older one waits for the CR LF pair and
