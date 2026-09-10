@@ -71,7 +71,7 @@ def test_ALX1544_P190_the_consumer_ruff_profile_ships_with_the_package():
     text = config.read_text(encoding="ascii")
     assert "line-length = 120" in text, "the C repositories write 120, not the library's 100"
     assert 'target-version = "py311"' in text
-    for waived in ("D", "N802", "S101", "ARG", "ERA", "T20"):
+    for waived in ("D", "N802", "S101", "ARG", "ERA", "T20", "S311"):
         assert f'"{waived}"' in text, f"{waived} is what a test folder earns over a library"
 
 

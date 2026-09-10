@@ -32,6 +32,8 @@ ignore = [
     "ARG",    # a fake's signature mirrors the real one, unused arguments included - that is the point
     "ERA",    # a commented C snippet beside a ctypes wrapper documents the struct it mirrors
     "T20",    # a bench script prints; printing is its interface
+    "S311",   # random.Random(seed) is REPRODUCIBLE FUZZ INPUT, not crypto - the rule is about
+              # unpredictability, and a test that cannot repeat its own failure is worse than useless
 ]
 
 [format]
