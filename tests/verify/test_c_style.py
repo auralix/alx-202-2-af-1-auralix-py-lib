@@ -15,6 +15,9 @@ Proofs (ALX-1544):
   P156 an unterminated doc block ends at the end of the file instead of running away
   P157 check() reads the files and turns a non-ASCII file into a finding, never a traceback
   P158 main(): exit 0 on PASS, 1 on FAIL, --out writes the same report as stdout
+  P184 mutation-driven hardening: the escape flag RESETS, so a literal containing an escape still ends and code
+       after it is code again - P152 only asserted that nothing was found, which stays true when the scanner
+       never leaves the string
 """
 
 from alx.verify import c_style
@@ -162,3 +165,24 @@ def test_ALX1544_P158_main_reports_pass_and_fail_and_writes_the_report(tmp_path,
     assert printed.splitlines()[0] == "C STYLE GATE: FAIL (1 finding(s))"
     assert "ternary operator (write if/else)" in printed
     assert out.read_text(encoding="ascii") == printed
+
+
+def test_ALX1544_P184_an_escaped_character_does_not_swallow_the_rest_of_the_file():
+    """Mutation-driven hardening: `escape = False` deleted survived the whole suite.
+
+    With the reset gone the flag latches on the first backslash, so the literal never closes and
+    every later line counts as string. Nothing noticed, because P152 asks only whether a ternary
+    was found INSIDE a literal - and "none found" is exactly what a scanner stuck in a string
+    reports. What pins the reset is a ternary AFTER the literal: real code that must be seen again.
+    """
+    after_escaped_quote = 'const char* s = "a \\" b";\nint y = z ? 1 : 0;\n'
+    assert c_style.find_ternaries(after_escaped_quote) == [2]
+
+    after_escaped_backslash = 'const char* s = "a \\\\";\nint y = z ? 1 : 0;\n'
+    assert c_style.find_ternaries(after_escaped_backslash) == [2]
+
+    after_escaped_char = "char c = '\\'';\nint y = z ? 1 : 0;\n"
+    assert c_style.find_ternaries(after_escaped_char) == [2]
+
+    # and the negative still holds: the escaped quote does not end the literal early
+    assert c_style.find_ternaries('const char* s = "why\\" ? no";\nint a = 1;\n') == []
