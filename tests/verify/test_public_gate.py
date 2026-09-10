@@ -20,6 +20,8 @@ Proofs (ALX-1544):
        silently passed
   P200 --history walks every commit, over full diffs or with --diff-only only the added lines
   P201 main(): 0 on PASS, 1 on FAIL, --out writes the same report, --commits-only skips the tree
+  P202 main() with no vocabulary reports FAIL as a verdict, not a traceback, and writes that verdict
+       to --out like any other - a caller reading only the first line still learns the gate did not run
 """
 
 import json
@@ -262,3 +264,25 @@ def test_ALX1544_P201_main_reports_pass_and_fail_and_honours_its_switches(repo, 
 
     # the vocabulary's own excludes are used even when --exclude adds none
     assert public_gate.main([str(repo), *words, "--base", "base", "--exclude", "extra"]) == 1
+
+
+def test_ALX1544_P202_a_missing_vocabulary_is_a_reported_verdict_not_a_traceback(
+    tmp_path, capsys, monkeypatch
+):
+    monkeypatch.delenv(public_gate.WORDS_ENV, raising=False)
+
+    # nothing to read at all
+    assert public_gate.main([str(tmp_path)]) == 1
+    printed = capsys.readouterr().out
+    assert printed.startswith("PUBLIC GATE: FAIL (no vocabulary:")
+    assert "ALX_GATE_WORDS" in printed
+
+    # a path that does not resolve, and the verdict still reaches --out
+    out = tmp_path / "reports" / "gate.txt"
+    assert (
+        public_gate.main([str(tmp_path), "--words", str(tmp_path / "gone.json"), "--out", str(out)])
+        == 1
+    )
+    printed = capsys.readouterr().out
+    assert printed.startswith("PUBLIC GATE: FAIL (vocabulary file not found:")
+    assert out.read_text(encoding="ascii") == printed

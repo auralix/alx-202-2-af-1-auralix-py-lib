@@ -8,9 +8,10 @@ is exactly as public as the file it describes.
 
 The vocabulary is NOT in this repository and never can be: the list itself names what must stay
 private. It is a JSON file kept wherever the organisation keeps private policy, and the gate is
-told where by ``--words`` or the ``ALX_GATE_WORDS`` environment variable. A gate with no
-vocabulary FAILS: a machine that simply lacks the file would otherwise report PASS over a tree
-full of findings, which is worse than having no gate at all. Usage::
+told where by ``--words`` or the ``ALX_GATE_WORDS`` environment variable - set that once
+per machine and no path is needed on the command line. A gate with NO vocabulary FAILS, and says
+so as a verdict rather than a traceback: a machine that simply lacks the file would otherwise
+report PASS over a tree full of findings, which is worse than having no gate at all. Usage::
 
     python -m alx.verify.public_gate <root> [--words <vocab.json>] [--base origin/master]
         [--exclude <name-or-relative-path>]... [--commits-only] [--history [--diff-only]]
@@ -289,11 +290,25 @@ def _parse(argv: list[str] | None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _write(report: str, out: str | None) -> None:
+    """Print the report and, when asked, write the same text to a file."""
+    sys.stdout.write(report)
+    if out:
+        Path(out).parent.mkdir(parents=True, exist_ok=True)
+        Path(out).write_text(report, encoding="ascii")
+
+
 def main(argv: list[str] | None = None) -> int:
     """Command line entry; see the module docstring."""
     args = _parse(argv)
     root = Path(args.root)
-    vocab = load(vocabulary_path(args.words))
+    try:
+        vocab = load(vocabulary_path(args.words))
+    except FileNotFoundError as missing:
+        # Never a crash and never a pass: the operator gets a verdict in the same shape as any
+        # other, so a caller reading only the first line still learns the gate did not run.
+        _write(f"PUBLIC GATE: FAIL ({missing})\n", args.out)
+        return 1
     exclude = (*vocab.excludes, *args.exclude)
 
     findings: list[str] = []
@@ -313,11 +328,7 @@ def main(argv: list[str] | None = None) -> int:
 
     verdict = "FAIL" if findings else "PASS"
     lines = [f"PUBLIC GATE: {verdict} ({'; '.join(scopes)})", *findings]
-    report = "\n".join(lines) + "\n"
-    sys.stdout.write(report)
-    if args.out:
-        Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-        Path(args.out).write_text(report, encoding="ascii")
+    _write("\n".join(lines) + "\n", args.out)
     return 1 if findings else 0
 
 
