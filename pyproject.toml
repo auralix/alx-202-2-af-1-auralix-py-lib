@@ -47,6 +47,10 @@ dev = [                                      # every lane: `uv sync --locked --e
 [tool.setuptools]
 packages = ["alx", "alx.debug_probe", "alx.psu", "alx.c_lib", "alx.fw", "alx.verify"]
 
+[tool.setuptools.package-data]
+# the consumer ruff profile is shipped, not generated: a C repo's ANALYZE stage passes it to ruff
+"alx.verify" = ["ruff_tests.toml"]
+
 [tool.pytest.ini_options]
 minversion = "8.0"
 testpaths = ["tests"]

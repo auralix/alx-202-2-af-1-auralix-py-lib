@@ -57,6 +57,24 @@ def pytest_reports(out: Path) -> list[str]:
     ]
 
 
+RUFF_TESTS_CONFIG = "ruff_tests.toml"
+"""The ruff profile a consumer's test folder is checked with; see :func:`ruff_tests_config`."""
+
+
+def ruff_tests_config() -> Path:
+    """Return the path of the shared ruff profile for a CONSUMER's test folder.
+
+    A consumer's noxfile passes it to ruff as ``--config``; it ships with this package, so two
+    repositories cannot drift into two dialects of the same rules. Missing means a broken install,
+    not a configuration choice, so it raises rather than returning a path nothing is at.
+    """
+    config = Path(__file__).with_name(RUFF_TESTS_CONFIG)
+    if not config.is_file():
+        msg = f"the shared ruff profile is missing from the installed package: {config}"
+        raise FileNotFoundError(msg)
+    return config
+
+
 def tool(env_var: str, default: str | Path) -> Path:
     """Return a tool's location: the environment variable ``env_var`` when set, else ``default``.
 

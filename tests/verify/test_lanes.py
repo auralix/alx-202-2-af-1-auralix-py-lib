@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: MIT
 """alx.verify.lanes: the lane vocabulary every noxfile shares (stages, evidence folders, reports, tools)."""
 
+from pathlib import Path
+
 import pytest
 
 from alx.verify import lanes
@@ -53,3 +55,31 @@ def test_ALX1544_P141_tool_missing_raises_naming_the_variable_never_skips(tmp_pa
     monkeypatch.delenv("ALX_TEST_TOOL", raising=False)
     with pytest.raises(FileNotFoundError, match="ALX_TEST_TOOL"):
         lanes.tool("ALX_TEST_TOOL", tmp_path / "nowhere")
+
+
+def test_ALX1544_P190_the_consumer_ruff_profile_ships_with_the_package():
+    """A C or device repo checks its test folder with THIS file, so it must be installed, not local.
+
+    One profile is the point: two repositories passing their own --config would drift into two
+    dialects of the same rules, which is what the naming rule exists to prevent.
+    """
+    config = lanes.ruff_tests_config()
+    assert config.is_file()
+    assert config.name == lanes.RUFF_TESTS_CONFIG
+    assert config.parent == Path(lanes.__file__).parent, "it ships beside the module that finds it"
+
+    text = config.read_text(encoding="ascii")
+    assert "line-length = 120" in text, "the C repositories write 120, not the library's 100"
+    assert 'target-version = "py311"' in text
+    for waived in ("D", "N802", "S101", "ARG", "ERA", "T20"):
+        assert f'"{waived}"' in text, f"{waived} is what a test folder earns over a library"
+
+
+def test_ALX1544_P191_a_missing_ruff_profile_is_a_broken_install_not_a_choice(monkeypatch):
+    """It fails naming the file, like every other missing tool in this pipeline - it never skips.
+
+    A consumer's ANALYZE stage silently checking nothing is the failure mode worth refusing.
+    """
+    monkeypatch.setattr(lanes, "RUFF_TESTS_CONFIG", "not_shipped.toml")
+    with pytest.raises(FileNotFoundError, match=r"not_shipped.toml"):
+        lanes.ruff_tests_config()

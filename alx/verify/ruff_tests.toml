@@ -1,0 +1,39 @@
+# The Auralix ruff profile for a CONSUMER's test folder (ANALYZE stage 0 of a C or device repo).
+#
+# A test folder is not a library, and holding it to a library's rules produces noise instead of
+# findings: measured 09.09 with this library's own full config, 1123 findings in the C library's
+# Test/ and 683 in the device's, almost all of them rules a test folder is right to break.
+#
+# So this is the same rule SET as the library uses, with the waivers a test folder earns and the
+# line length the C repositories write. A consumer's noxfile passes it as
+#
+#     python -m ruff check --config <alx.verify.ruff_tests_config()> .
+#
+# and adds nothing of its own: one profile, so two repositories cannot drift into two dialects.
+line-length = 120           # the C repositories write 120; the library itself writes 100
+target-version = "py311"    # the floor of every Auralix repository (see the library's pyproject)
+
+[lint]
+# the library's own selection, unchanged - a test folder is checked for the same classes of bug
+select = [
+    "E", "W", "F", "I", "N", "UP", "B", "D",
+    "S", "BLE", "A", "T20", "ERA", "EXE",
+    "SIM", "C4", "PIE", "RET", "RUF", "PERF", "FURB",
+    "PT", "ARG", "PTH", "TC", "LOG", "G", "DTZ", "ICN",
+    "PLE", "PLW", "PLC",
+]
+
+# What a test folder is allowed and a library is not. Each of these is a rule that would be right
+# in a library and is wrong here; anything not listed is a finding to fix, not to waive.
+ignore = [
+    "D",      # the proof is the test's NAME and its module docstring, not a docstring per helper
+    "N802",   # test_ALX1544_P123_behaviour is the proof token; renaming it would break the ledger
+    "S101",   # assert IS the test
+    "ARG",    # a fake's signature mirrors the real one, unused arguments included - that is the point
+    "ERA",    # a commented C snippet beside a ctypes wrapper documents the struct it mirrors
+    "T20",    # a bench script prints; printing is its interface
+]
+
+[format]
+quote-style = "double"
+docstring-code-format = true
