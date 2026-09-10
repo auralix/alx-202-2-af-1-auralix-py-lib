@@ -261,6 +261,11 @@ class MutationRun:
 
     def _pytest(self, source: Path, timeout_s: float) -> tuple[int, float]:
         """Run the tests of ``source``; return ``(returncode, seconds)``, -1 on timeout."""
+        rc, seconds, _ = self._pytest_out(source, timeout_s)
+        return rc, seconds
+
+    def _pytest_out(self, source: Path, timeout_s: float) -> tuple[int, float, str]:
+        """As ``_pytest``, and the tests' own output - the only thing that explains a red run."""
         t0 = time.monotonic()
         try:
             result = self._run(
@@ -273,15 +278,26 @@ class MutationRun:
                 env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
             )
         except subprocess.TimeoutExpired:
-            return -1, time.monotonic() - t0
-        return result.returncode, time.monotonic() - t0
+            return -1, time.monotonic() - t0, "timed out"
+        return (
+            result.returncode,
+            time.monotonic() - t0,
+            (result.stdout or "") + (result.stderr or ""),
+        )
 
     def baseline(self, source: Path) -> float:
-        """Run the tests on the untouched source; return the duration, raise when they are red."""
-        rc, seconds = self._pytest(source, timeout_s=600.0)
+        """Run the tests on the untouched source; return the duration, raise when they are red.
+
+        The tests' own output goes into the error. Without it the message is "rc=1" and the reason
+        is gone, which is no use at three in the morning - and a baseline can be red for reasons
+        that have nothing to do with the source being mutated, a flaky timing test under the load
+        of the run itself among them.
+        """
+        rc, seconds, output = self._pytest_out(source, timeout_s=600.0)
         if rc != 0:
+            tail = "\n".join(output.strip().splitlines()[-25:])
             raise MutationError(
-                f"baseline is red for {source} (rc={rc}); fix the suite before mutating"
+                f"baseline is red for {source} (rc={rc}); fix the suite before mutating\n{tail}"
             )
         return seconds
 
@@ -332,9 +348,11 @@ class MutationRun:
         key = rel.removesuffix(source.suffix).replace("/", ".")  # alx/c_lib/cli.py -> alx.c_lib.cli
         self.recover()
         self._clear_pycache(rel)
+        mutants = self.viable(source, self._generate(source, self.out / "mutants" / key))
+        if not mutants:
+            return []  # nothing to plant, so nothing to time: a baseline run would be pure cost
         base_s = self.baseline(source)
         timeout_s = max(self.min_timeout_s, self.timeout_factor * base_s)
-        mutants = self.viable(source, self._generate(source, self.out / "mutants" / key))
         if self.sample and len(mutants) > self.sample:
             picked = random.Random(self.seed).sample(mutants, self.sample)  # noqa: S311
             mutants = sorted(picked)

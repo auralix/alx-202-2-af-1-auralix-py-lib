@@ -266,10 +266,17 @@ def test_ALX1544_P109_red_baseline_or_red_restore_raise_and_keep_the_source(tmp_
         calls["n"] += 1
         return subprocess.CompletedProcess(cmd, 0 if calls["n"] == 1 else 1, stdout="", stderr="")
 
+    # a real plant, so there is something to restore: baseline green, then every run red
     with pytest.raises(MutationError, match="suite red after restoring"):
-        MutationRun(tmp_path, tmp_path / "out", generate=lambda s, d: [], run=red_after).run_source(
+        MutationRun(tmp_path, tmp_path / "out", generate=fake_generate, run=red_after).run_source(
             src
         )
+    assert src.read_text(encoding="utf-8") == SRC
+
+    # a source the generator produces nothing for never runs a baseline: there is nothing to time,
+    # and a suite that is red for its own reasons must not be blamed on a source with no mutants
+    never = MutationRun(tmp_path, tmp_path / "out5", generate=lambda s, d: [], run=red)
+    assert never.run_source(src) == []
     assert src.read_text(encoding="utf-8") == SRC
 
 
