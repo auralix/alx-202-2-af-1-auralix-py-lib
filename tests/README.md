@@ -38,7 +38,7 @@ its lane, never skips it.
   - `alx.verify`: the pipeline's shared pieces for any repo - `lanes` (the noxfile vocabulary: stage
     names, evidence folders, report options, tool locations), `evidence` (the pytest plugin: proof
     properties, `run_dir`, `git_head`) and the lane gates as commands (`ascii_gate`, `readme_gate`,
-    `c_style`, `coverage_gate`, `mutation`). A gate a C or C# repository needs lives here too: this
+    `c_style`, `coverage_gate`, `mutation`, `public_gate`). A gate a C or C# repository needs lives here too: this
     repository has no C file to run `c_style` on, its consumers do, and one implementation with one
     test suite beats a copy per repository
   - `alx.serial_logger` (days-long UART logging, the soak mode), `alx.errors`
@@ -114,6 +114,7 @@ its lane, never skips it.
 	- `noxfile.py` -> `analyze`
 	- `alx/verify/ascii_gate.py`, `alx/verify/readme_gate.py`
 	- `alx/verify/c_style.py` -> `python -m alx.verify.c_style <files>`: no ternary operator, doxygen tag lines aligned on tabs; for the C repositories' Stage 0, no C source in this repository
+	- `alx/verify/public_gate.py` -> `python -m alx.verify.public_gate <root> --words <vocab.json>`: no private vocabulary and no non-ASCII byte reaches a public repository, in the tree and in commit messages alike; `--history` walks every commit of a range. Run before every commit to a public repository, NOT part of a lane: the vocabulary names what must stay private, so it lives outside these repositories and the gate fails without it
 - **Files - Generated**
 	- `build/analyze/ruff.xml`, `mypy.xml`, `ascii_gate.txt`, `readme_gate.txt`, `requirements.txt`, `pip_audit.json`
 
