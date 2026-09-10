@@ -9,6 +9,13 @@ Proofs (ALX-1544):
   P121 mutation-driven hardening: TraceLine is immutable
   P122 mutation-driven hardening: undecodable bytes are replaced, never fatal; a bin name without an
        underscore yields its stem as hash7
+
+Proofs (ALX-1553):
+  P29 parse_id_trace reads the AlxId_Trace block: the four identity fields plus hash7
+  P30 a device behind a bootloader emits the block twice - the LAST block wins and the bootloader
+      section arrives under boot_ keys
+  P31 inventory lines outside the identity sections are ignored, and a transcript without the block
+      gives {}
 """
 
 import dataclasses
@@ -17,7 +24,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from alx.c_lib.trace import TraceLine, parse_banner, parse_line, parse_lines
+from alx.c_lib.trace import TraceLine, parse_banner, parse_id_trace, parse_line, parse_lines
 
 BANNER = (
     b"[2000-01-01 00:00:00.028] [INF] APP START\r\n"
@@ -96,3 +103,78 @@ def test_ALX1544_P122_undecodable_bytes_are_replaced_and_underscore_free_bin_kee
     assert parse_line(b"[t] [WRN] caf\xe9") == TraceLine("t", "WRN", "caf\ufffd")
     plain = BANNER.replace(b"2609081200_EX-1_ExampleDeviceFw_V1-2-3_0123456.bin", b"image.bin")
     assert parse_banner(plain)["hash7"] == "image"
+
+
+def _id_block(artf, name, ver, binfile, boot=None, inventory=True):
+    """One AlxId_Trace block as the firmware writes it, optionally with the inventory noise."""
+    out = [
+        "AlxId_Trace - START",
+        "FW:",
+        f"- artf: {artf}",
+        f"- name: {name}",
+        f"- ver: {ver}",
+        f"- bin: {binfile}",
+        "- job_name: VisualGDB Local",
+        "- job_number: 0",
+    ]
+    if inventory:
+        out += [
+            "Compiler:",
+            "- name: C, ver: 199901",
+            "- name: GCC",
+            "- ver: 10.3.1",
+            "HW:",
+            "- pcb_artf: EX-1-2-3",
+            "- pcb_name: Example",
+            "- mcu_name: EXAMPLE",
+        ]
+    if boot:
+        out += ["FW - Bootloader:"] + [f"- {k}: {v}" for k, v in boot.items()]
+    return b"".join(f"[2000-01-01 00:00:00.001] [INF] {line}\r\n".encode("ascii") for line in out)
+
+
+APP_ID = (
+    "EX-1-2-3",
+    "ExampleFw",
+    "1.2.3.2601020304." + "ab" * 20,
+    "2601020304_EX-1-2-3_ExampleFw_V1-2-3_abcdef1.bin",
+)
+BOOT_ID = {
+    "artf": "EX-1-2-4",
+    "name": "ExampleFw_Boot",
+    "ver": "0.1.0.2601010101." + "cd" * 20,
+    "bin": "2601010101_EX-1-2-4_ExampleFw_Boot_V0-1-0_9876543.bin",
+}
+
+
+def test_ALX1553_P29_parse_id_trace_reads_the_identity_block():
+    ident = parse_id_trace(_id_block(*APP_ID, inventory=False))
+    assert ident == {
+        "artf": "EX-1-2-3",
+        "name": "ExampleFw",
+        "ver": "1.2.3.2601020304." + "ab" * 20,
+        "bin": "2601020304_EX-1-2-3_ExampleFw_V1-2-3_abcdef1.bin",
+        "hash7": "abcdef1",
+    }
+
+
+def test_ALX1553_P30_the_last_block_wins_and_the_bootloader_arrives_under_boot_keys():
+    # a device behind a bootloader: the bootloader prints its own block, then the application prints
+    # one carrying both identities. Only the second may describe what is running.
+    boot_first = _id_block(BOOT_ID["artf"], BOOT_ID["name"], BOOT_ID["ver"], BOOT_ID["bin"])
+    ident = parse_id_trace(boot_first + _id_block(*APP_ID, boot=BOOT_ID))
+    assert ident["name"] == "ExampleFw", "the application, not the bootloader that printed first"
+    assert ident["hash7"] == "abcdef1"
+    assert ident["boot_name"] == "ExampleFw_Boot"
+    assert ident["boot_artf"] == "EX-1-2-4"
+    assert ident["boot_hash7"] == "9876543"
+
+
+def test_ALX1553_P31_inventory_is_ignored_and_no_block_gives_nothing():
+    ident = parse_id_trace(_id_block(*APP_ID, inventory=True))
+    assert ident["name"] == "ExampleFw", "'- name: GCC' in the compiler list must not overwrite it"
+    assert "pcb_artf" not in ident
+    assert "mcu_name" not in ident
+    assert parse_id_trace(BANNER) == {}, "a product banner is not an AlxId_Trace block"
+    assert parse_id_trace(b"") == {}
+    assert parse_id_trace(b"[t] [INF] AlxId_Trace - START\r\n") == {}, "a block with no section"

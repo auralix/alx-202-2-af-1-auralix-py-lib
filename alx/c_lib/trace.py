@@ -1,11 +1,34 @@
 # SPDX-License-Identifier: MIT
-"""Parsers for the Auralix C Library trace output: the boot banner and trace lines.
+"""Parsers for the Auralix C Library trace output: the boot banner, the identity block, trace lines.
 
 The firmware writes trace lines on its debug UART unrequested, ``[<timestamp>] [<LEVEL>] <text>``,
-and right after a reset it prints the identity banner (name, version, bin file). On a shared UART
-these lines arrive between CLI responses: ``alx.c_lib.cli.Cli`` keeps them out of the JSON frames
-and offers them in ``trace_rx``; a trace-only UART delivers them through ``alx.serial_logger``. This
-module only parses bytes, it does not know where they came from.
+and right after a reset it prints who it is. On a shared UART these lines arrive between CLI
+responses: ``alx.c_lib.cli.Cli`` keeps them out of the JSON frames and offers them in ``trace_rx``;
+a trace-only UART delivers them through ``alx.serial_logger``. This module only parses bytes, it
+does not know where they came from.
+
+Two identity shapes, because the library has two
+------------------------------------------------
+``parse_banner`` reads a product's own one-line-per-field banner (``FW Started:`` / ``- FW Name:`` /
+``- FW Version:`` / ``- FW Bin:``), which a product writes itself.
+
+``parse_id_trace`` reads ``AlxId_Trace``, the library's own identity block, which every product on a
+recent library prints without writing any code for it::
+
+    AlxId_Trace - START
+    FW:
+    - artf: EXAMPLE-1-2-3
+    - name: ExampleFw
+    - ver: 1.2.3.2601020304.<40 hex>
+    - bin: 2601020304_EXAMPLE-1-2-3_ExampleFw_V1-2-3_abcdef1.bin
+    ...
+    FW - Bootloader:
+    - artf: ...
+
+A device behind a bootloader emits the block twice, once from the bootloader and once from the
+application, so the parser keeps the LAST block: after a reset that is the application, which is
+what a test suite is asking about. A bootloader section inside that block is returned under
+``boot_`` keys, so one call answers both "what is running" and "what launched it".
 """
 
 from __future__ import annotations
@@ -19,6 +42,11 @@ BANNER_RE = re.compile(
     re.DOTALL,
 )
 LINE_RE = re.compile(rb"^\[(?P<ts>[^\]]*)\] \[(?P<level>[A-Z]{3})\] ?(?P<text>.*?)\r?$")
+
+ID_START = "AlxId_Trace - START"
+ID_SECTIONS = {"FW:": "", "FW - Bootloader:": "boot_"}
+ID_FIELDS = ("artf", "name", "ver", "bin")
+ID_FIELD_RE = re.compile(r"^- (?P<key>[a-z_]+): (?P<val>.*)$")
 
 
 @dataclass(frozen=True)
@@ -57,3 +85,35 @@ def parse_lines(raw: bytes) -> list[TraceLine]:
     """Parse every trace line in ``raw``; non-trace bytes (frames, noise) are skipped."""
     lines = [parse_line(part) for part in raw.split(b"\n")]
     return [ln for ln in lines if ln is not None]
+
+
+def parse_id_trace(raw: bytes) -> dict[str, str]:
+    """Extract the last ``AlxId_Trace`` identity block, ``{}`` when there is none.
+
+    Returns ``artf``, ``name``, ``ver`` and ``bin`` of the firmware that printed it, plus ``hash7``
+    taken from the bin file name, and the same four under ``boot_`` when the block carries a
+    bootloader section. Fields outside the two identity sections (compiler and library versions,
+    the pcb and bom identities) are ignored: they are inventory, not the answer to "which image".
+    """
+    ident: dict[str, str] = {}
+    prefix: str | None = None
+    for line in parse_lines(raw):
+        text = line.text.strip()
+        if text.startswith(ID_START):
+            ident, prefix = {}, None
+            continue
+        if text in ID_SECTIONS:
+            prefix = ID_SECTIONS[text]
+            continue
+        if prefix is None:
+            continue
+        match = ID_FIELD_RE.match(text)
+        if match is None:
+            prefix = None  # any other line ends the section
+            continue
+        if match["key"] in ID_FIELDS:
+            ident[prefix + match["key"]] = match["val"]
+    for key in ("bin", "boot_bin"):
+        if key in ident:
+            ident[key.replace("bin", "hash7")] = ident[key].rsplit("_", 1)[-1].removesuffix(".bin")
+    return ident
