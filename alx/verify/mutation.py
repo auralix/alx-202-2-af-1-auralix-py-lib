@@ -152,17 +152,56 @@ class _Normalize(ast.NodeTransformer):
         return ast.Assign(targets=[node.target], value=node.value)
 
 
+def _does_nothing(statement: ast.stmt) -> bool:
+    """Whether ``statement`` has no effect at all: ``pass``, or a bare ``...``."""
+    if isinstance(statement, ast.Pass):
+        return True
+    return (
+        isinstance(statement, ast.Expr)
+        and isinstance(statement.value, ast.Constant)
+        and statement.value.value is Ellipsis
+    )
+
+
+def _drop_dead_statements(tree: ast.AST) -> ast.AST:
+    """Remove statements that do nothing, and a ``continue`` that ends a loop body.
+
+    Measured on the first full run of this package: a third of the 242 survivors were mutants of
+    exactly these shapes. universalmutator replaces a docstring with ``pass`` and appends
+    ``continue`` to loop bodies, and neither changes what the code does - so neither should reach
+    a survivor list a human has to read. Dropping them is exact, not a heuristic: ``pass`` and a
+    bare ``...`` execute nothing, and a ``continue`` as the last statement of a loop body goes
+    where control was going anyway.
+
+    Deliberately NOT done here: reordering keyword arguments, which the same run produced 19 of.
+    It is equivalent only while the argument expressions have no side effects, and a tool that
+    hides a real difference is worse than one that shows noise.
+    """
+    for node in ast.walk(tree):
+        for field in ("body", "orelse", "finalbody"):
+            statements = getattr(node, field, None)
+            if not isinstance(statements, list):
+                continue
+            kept = [s for s in statements if not _does_nothing(s)]
+            in_loop_body = field == "body" and isinstance(node, (ast.For, ast.AsyncFor, ast.While))
+            if in_loop_body and kept and isinstance(kept[-1], ast.Continue):
+                kept = kept[:-1]
+            setattr(node, field, kept)
+    return tree
+
+
 def fingerprint(text: str, filename: str) -> str | None:
     """Return the normalized AST of ``text`` as text; None when it does not parse.
 
-    Docstrings, type annotations and source positions are dropped, so a mutant that only edits a
-    docstring or an annotation, or that inserts a line inside one, is EQUIVALENT, never a survivor.
+    Docstrings, type annotations, source positions and statements that do nothing are dropped, so
+    a mutant that only edits a docstring or an annotation, inserts a line inside one, deletes a
+    docstring, or appends a ``continue`` to a loop body, is EQUIVALENT and never a survivor.
     """
     try:
         tree = ast.parse(text, filename)
     except (SyntaxError, ValueError):
         return None
-    return ast.dump(_Normalize().visit(tree))
+    return ast.dump(_drop_dead_statements(_Normalize().visit(tree)))
 
 
 def fingerprint_file(path: Path) -> str | None:

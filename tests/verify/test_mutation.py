@@ -25,6 +25,8 @@ Proofs (ALX-1544):
        rebuild; main() wires --tests-dir, --check-cmd, --fingerprint-cmd, --rebuild-cmd
   P182 a run where the generator produced mutants and NOT ONE reached the tests says so and exits non-zero:
        a broken check hook must not read as a lane that passed
+  P186 statements that do nothing are dropped from the fingerprint (a docstring replaced by pass, a bare ...,
+       a continue ending a loop body) while a break, a continue that is not last, and any real change are kept
 """
 
 import json
@@ -598,3 +600,40 @@ def test_ALX1544_P182_a_run_that_tested_nothing_says_so_and_fails(tmp_path):
     )
     empty.run_source(src)
     assert empty.nothing_tested() is None
+
+
+def test_ALX1544_P186_statements_that_do_nothing_are_dropped_from_the_fingerprint():
+    """A third of a real survivor list was mutants of shapes that cannot change what code does.
+
+    Measured on the first full run of this package: universalmutator replaces a docstring with
+    `pass` and appends `continue` to loop bodies. Neither changes behaviour, so neither should
+    reach a list a human has to read. What must NOT be dropped is the near neighbour of each: a
+    `break` in the same place, and a `continue` that is not last.
+    """
+    fp = mutation.fingerprint
+
+    # dropped: they execute nothing
+    assert fp('def f(a):\n    """Doc."""\n    return a\n', "m.py") == fp(
+        "def f(a):\n    pass\n    return a\n", "m.py"
+    )
+    assert fp("class P:\n    def m(self):\n        ...\n", "m.py") == fp(
+        "class P:\n    def m(self):\n        pass\n", "m.py"
+    )
+    assert fp("for x in y:\n    z(x)\n", "m.py") == fp(
+        "for x in y:\n    z(x)\n    continue\n", "m.py"
+    )
+    assert fp("while c:\n    z()\n", "m.py") == fp("while c:\n    z()\n    continue\n", "m.py")
+
+    # kept: each of these DOES change what the code does
+    assert fp("for x in y:\n    z(x)\n", "m.py") != fp(
+        "for x in y:\n    z(x)\n    break\n", "m.py"
+    ), "a break stops the loop"
+    assert fp("for x in y:\n    z(x)\n    w(x)\n", "m.py") != fp(
+        "for x in y:\n    z(x)\n    continue\n    w(x)\n", "m.py"
+    ), "a continue that is not last skips the rest"
+    assert fp("def f(a, b):\n    return a + b\n", "m.py") != fp(
+        "def f(a, b):\n    return a - b\n", "m.py"
+    )
+    assert fp("def f():\n    return 1\n", "m.py") != fp("def f():\n    pass\n", "m.py"), (
+        "deleting a return is not deleting nothing"
+    )
