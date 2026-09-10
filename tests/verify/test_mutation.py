@@ -29,6 +29,8 @@ Proofs (ALX-1544):
        a continue ending a loop body) while a break, a continue that is not last, and any real change are kept
   P188 a continue in TAIL position of a loop is dropped too - at the end of an if arm or a with that is itself
        last - while one inside a nested loop or a try, or not last, is kept
+  P189 the mutant pool is generated and filtered ONCE per source: reused while the source and the hooks are
+       unchanged (same verdicts, no second generation), rebuilt when either changes, skipped with pool=False
 """
 
 import json
@@ -674,3 +676,56 @@ def test_ALX1544_P188_a_continue_in_tail_position_of_a_loop_is_dropped():
     assert fp("for x in y:\n    if c:\n        z(x)\n", "m.py") != fp(
         "for x in y:\n    if c:\n        z(x)\n        break\n", "m.py"
     ), "a break in the same slot stops the loop"
+
+
+class CountingGenerator:
+    """fake_generate, but it records how often it actually ran."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def __call__(self, source: Path, mutant_dir: Path) -> list[Path]:
+        self.calls += 1
+        return fake_generate(source, mutant_dir)
+
+
+def test_ALX1544_P189_the_mutant_pool_is_generated_and_filtered_once_per_source(tmp_path):
+    """Generating and filtering is nearly all of a C run and none of it depends on the tests.
+
+    One C source produced 911 mutants and about 1400 compiler calls to decide which were
+    stillborn or equivalent - nine minutes to end up testing three. That work depends only on the
+    source, so it is cached; what must NOT survive is a cache made from different bytes or by
+    different hooks.
+    """
+    src = project(tmp_path)
+    out = tmp_path / "out"
+    generate = CountingGenerator()
+
+    first = MutationRun(tmp_path, out, generate=generate, run=ScriptedRunner(src))
+    first.run_source(src)
+    assert generate.calls == 1
+
+    second = MutationRun(tmp_path, out, generate=generate, run=ScriptedRunner(src))
+    second.run_source(src)
+    assert generate.calls == 1, "the pool was reused"
+    assert second.counts() == first.counts(), (
+        "a cached run reports the same STILLBORN and EQUIVALENT as the run that filled the cache"
+    )
+
+    # a different pool_id means different hooks decided it, so it is not the same pool
+    other = MutationRun(tmp_path, out, generate=generate, run=ScriptedRunner(src), pool_id="clang")
+    other.run_source(src)
+    assert generate.calls == 2, "a pool filtered by other hooks is not reused"
+    assert other.counts() == first.counts()
+
+    # editing the source invalidates it, the moment it matters and not before
+    src.write_text(SRC.replace("a - b", "b - a"), encoding="utf-8")
+    edited = MutationRun(tmp_path, out, generate=generate, run=ScriptedRunner(src), pool_id="clang")
+    edited.run_source(src)
+    assert generate.calls == 3, "the digest is the source's own bytes"
+
+    # and the cache can be refused outright
+    off = MutationRun(tmp_path, out, generate=generate, run=ScriptedRunner(src), pool=False)
+    off.run_source(src)
+    off.run_source(src)
+    assert generate.calls == 5, "pool=False generates every time"

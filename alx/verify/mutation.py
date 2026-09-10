@@ -18,7 +18,8 @@ Kill rate = killed / (killed + survived). Report-only: exit code 0 unless the ru
 (red baseline, source not restored). 100 % is not the target; the survivor diffs are the output.
 Usage::
 
-    python -m alx.verify.mutation [--out build/mutate] [--sample 100] [--seed 1] src.py ...
+    python -m alx.verify.mutation [--out build/mutate] [--sample 100] [--seed 1]
+                                  [--no-pool] src.py ...
     python -m alx.verify.mutation --tests-dir Test --rebuild-cmd "<build the test DLL>" \
         --check-cmd "clang -fsyntax-only {mutant}" --fingerprint-cmd "<hash of {mutant}>" alxFoo.c
 
@@ -44,6 +45,7 @@ import argparse
 import ast
 import difflib
 import functools
+import hashlib
 import json
 import os
 import random
@@ -294,11 +296,18 @@ class MutationRun:
         check: Callable[[Path], bool] | None = None,
         fingerprint_of: Callable[[Path], str | None] = fingerprint_file,
         rebuild: Callable[[], bool] | None = None,
+        pool: bool = True,
+        pool_id: str = "",
     ):
         """Configure the run: repository, output folder, sampling, and the language hooks.
 
         ``generate``, ``run``, ``check``, ``fingerprint_of`` and ``rebuild`` are the seams: the
         defaults are the Python recipe, a compiled language passes its own (the C library does).
+
+        ``pool`` caches the generated and filtered mutants of a source under ``<out>/pool/`` and
+        reuses them while the source is unchanged; ``pool_id`` is whatever else the filtering
+        depended on, so a cache made with different hooks is not reused. Set ``pool=False`` to
+        generate every time.
         """
         self.root = Path(root).resolve()
         self.out = Path(out)
@@ -312,6 +321,8 @@ class MutationRun:
         self._check = check
         self._fingerprint = fingerprint_of
         self._rebuild = rebuild
+        self.pool = pool
+        self.pool_id = pool_id
         self.outcomes: list[Outcome] = []
 
     # -- pieces ---------------------------------------------------------------------------
@@ -383,6 +394,61 @@ class MutationRun:
                 keep.append(mutant)
         return keep
 
+    # -- the mutant pool ------------------------------------------------------------------
+    def pool_digest(self, source: Path) -> str:
+        """Return what a cached pool is valid for: the source's bytes and whatever filtered it."""
+        digest = hashlib.sha256()
+        digest.update(source.read_bytes())
+        digest.update(self.pool_id.encode("utf-8"))
+        return digest.hexdigest()
+
+    def mutant_pool(self, source: Path, key: str) -> list[Path]:
+        """Return the viable mutants of ``source``, from the cache when it is still valid.
+
+        Generating and filtering is nearly all of a C run: one source produced 911 mutants, and
+        deciding which of them were stillborn or equivalent cost about 1400 compiler calls - nine
+        minutes to end up testing three. None of that depends on the tests, only on the source, so
+        it is done once and kept. The digest is the source's own bytes, so an edit invalidates the
+        pool the moment it matters and never a moment later.
+
+        The dropped mutants are cached too, not just the survivors of the filter: they are what
+        the report counts as STILLBORN and EQUIVALENT, and a cached run has to report the same
+        numbers as the run that filled the cache.
+        """
+        target = self.out / "mutants" / key
+        if not self.pool:
+            return self.viable(source, self._generate(source, target))
+
+        digest = self.pool_digest(source)
+        record = self.out / "pool" / f"{key}.json"
+        store = self.out / "pool" / key
+        if record.exists():
+            saved = json.loads(record.read_text(encoding="utf-8"))
+            if saved.get("digest") == digest:
+                target.mkdir(parents=True, exist_ok=True)
+                for name in saved["viable"]:
+                    shutil.copyfile(store / name, target / name)
+                for name, status, detail in saved["dropped"]:
+                    self.outcomes.append(Outcome(str(source), name, status, 0.0, detail))
+                return [target / name for name in saved["viable"]]
+
+        first_new = len(self.outcomes)
+        viable = self.viable(source, self._generate(source, target))
+        dropped = [[o.mutant, o.status, o.detail] for o in self.outcomes[first_new:]]
+        shutil.rmtree(store, ignore_errors=True)
+        store.mkdir(parents=True, exist_ok=True)
+        for mutant in viable:
+            shutil.copyfile(mutant, store / mutant.name)
+        record.parent.mkdir(parents=True, exist_ok=True)
+        record.write_text(
+            json.dumps(
+                {"digest": digest, "viable": [m.name for m in viable], "dropped": dropped},
+                indent=1,
+            ),
+            encoding="utf-8",
+        )
+        return viable
+
     # -- crash safety ---------------------------------------------------------------------
     def recover(self) -> list[str]:
         """Restore every source a crashed run left planted (its copy under ``out/backup``)."""
@@ -413,7 +479,7 @@ class MutationRun:
         key = rel.removesuffix(source.suffix).replace("/", ".")  # alx/c_lib/cli.py -> alx.c_lib.cli
         self.recover()
         self._clear_pycache(rel)
-        mutants = self.viable(source, self._generate(source, self.out / "mutants" / key))
+        mutants = self.mutant_pool(source, key)
         if not mutants:
             return []  # nothing to plant, so nothing to time: a baseline run would be pure cost
         base_s = self.baseline(source)
@@ -562,6 +628,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--sample", type=int, default=0, help="mutants per source, 0 = all")
     parser.add_argument("--seed", type=int, default=1, help="sampling seed")
     parser.add_argument(
+        "--no-pool",
+        action="store_true",
+        help="generate and filter every run instead of reusing <out>/pool/ for unchanged sources",
+    )
+    parser.add_argument(
         "--tests-dir", default="tests", help="tests folder under root (default tests)"
     )
     parser.add_argument(
@@ -577,6 +648,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     root = Path(args.root).resolve()
+    # what the pool is valid for besides the source: the hooks that decided stillborn / equivalent
+    pool_id = "|".join(str(x) for x in (args.check_cmd, args.fingerprint_cmd, args.tests_dir))
     run = MutationRun(
         args.root,
         args.out,
@@ -590,6 +663,8 @@ def main(argv: list[str] | None = None) -> int:
             else fingerprint_file
         ),
         rebuild=rebuild_command(args.rebuild_cmd, root) if args.rebuild_cmd else None,
+        pool=not args.no_pool,
+        pool_id=pool_id,
     )
     try:
         for rel in run.start():
