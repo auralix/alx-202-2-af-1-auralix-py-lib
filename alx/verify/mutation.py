@@ -298,6 +298,7 @@ class MutationRun:
         rebuild: Callable[[], bool] | None = None,
         pool: bool = True,
         pool_id: str = "",
+        sample_raw: bool = False,
     ):
         """Configure the run: repository, output folder, sampling, and the language hooks.
 
@@ -308,6 +309,15 @@ class MutationRun:
         reuses them while the source is unchanged; ``pool_id`` is whatever else the filtering
         depended on, so a cache made with different hooks is not reused. Set ``pool=False`` to
         generate every time.
+
+        ``sample_raw`` takes ``sample`` mutants BEFORE the filter instead of after it. The filter
+        compiles every mutant twice - once to check it, once to fingerprint it - and on a large
+        translation unit that is the whole cost of a run: a 7000-line firmware source generates
+        thousands of mutants, and filtering them all to then test six is days of compiling. With
+        this set the sample is drawn first and only those are filtered, so the run is bounded by
+        ``sample``. The price is that the sample includes mutants the filter would have dropped, so
+        STILLBORN and EQUIVALENT appear in the counts and fewer than ``sample`` mutants reach the
+        tests. Nothing is cached in this mode: a random subset is not a pool.
         """
         self.root = Path(root).resolve()
         self.out = Path(out)
@@ -323,6 +333,7 @@ class MutationRun:
         self._rebuild = rebuild
         self.pool = pool
         self.pool_id = pool_id
+        self.sample_raw = sample_raw
         self.outcomes: list[Outcome] = []
 
     # -- pieces ---------------------------------------------------------------------------
@@ -416,6 +427,11 @@ class MutationRun:
         numbers as the run that filled the cache.
         """
         target = self.out / "mutants" / key
+        if self.sample_raw and self.sample:
+            generated = self._generate(source, target)
+            if len(generated) > self.sample:
+                generated = sorted(random.Random(self.seed).sample(generated, self.sample))  # noqa: S311
+            return self.viable(source, generated)
         if not self.pool:
             return self.viable(source, self._generate(source, target))
 
@@ -626,6 +642,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--root", default=".", help="repository root (default: current folder)")
     parser.add_argument("--out", default="build/mutate", help="output folder (the lane's evidence)")
     parser.add_argument("--sample", type=int, default=0, help="mutants per source, 0 = all")
+    parser.add_argument(
+        "--sample-raw",
+        action="store_true",
+        help="draw the sample BEFORE the filter - bounds a run over a large translation unit, at "
+        "the cost of spending part of the sample on stillborn and equivalent mutants",
+    )
     parser.add_argument("--seed", type=int, default=1, help="sampling seed")
     parser.add_argument(
         "--no-pool",
@@ -654,6 +676,7 @@ def main(argv: list[str] | None = None) -> int:
         args.root,
         args.out,
         sample=args.sample,
+        sample_raw=args.sample_raw,
         seed=args.seed,
         tests_dir=args.tests_dir,
         check=check_command(args.check_cmd, root) if args.check_cmd else None,

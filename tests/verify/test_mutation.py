@@ -729,3 +729,54 @@ def test_ALX1544_P189_the_mutant_pool_is_generated_and_filtered_once_per_source(
     off.run_source(src)
     off.run_source(src)
     assert generate.calls == 5, "pool=False generates every time"
+
+
+def test_ALX1553_P104_sample_raw_draws_before_the_filter_and_keeps_no_pool(tmp_path):
+    """A run over a large translation unit is bounded by the sample, not by the source's size.
+
+    The filter compiles every mutant twice, to check it and to fingerprint it, and on a firmware
+    source of several thousand lines that is the entire cost: the device repository's mmxMain.c
+    generates mutants by the thousand, and filtering all of them to then test six is days of
+    compiling. Drawing the sample first makes the run cost what the sample says it costs.
+
+    What it gives up is measured here rather than described: the sample now contains mutants the
+    filter would have dropped, so fewer than ``sample`` reach the tests and the dropped ones are
+    still counted. And nothing is cached, because a random subset is not a pool.
+    """
+    src = project(tmp_path)
+    generate = CountingGenerator()
+    runner = ScriptedRunner(src)
+
+    raw = MutationRun(
+        tmp_path, tmp_path / "raw", sample=2, seed=3, generate=generate, run=runner, sample_raw=True
+    )
+    planted = raw.run_source(src)
+
+    assert generate.calls == 1
+    assert len(planted) <= 2, "the sample bounds what is filtered, so it bounds what is tested"
+    assert sum(raw.counts().values()) <= len(MUTANTS), "only the sample was ever looked at"
+
+    # the same run again generates again: a subset drawn with a seed is not a cache
+    raw_again = MutationRun(
+        tmp_path, tmp_path / "raw", sample=2, seed=3, generate=generate, run=runner, sample_raw=True
+    )
+    raw_again.run_source(src)
+    assert generate.calls == 2
+
+    # a sample bigger than the source can fill is no sample at all: everything is filtered
+    everything = MutationRun(
+        tmp_path,
+        tmp_path / "all",
+        sample=99,
+        seed=3,
+        generate=generate,
+        run=runner,
+        sample_raw=True,
+    )
+    everything.run_source(src)
+    assert sum(everything.counts().values()) == len(MUTANTS)
+
+    # and without the flag the filter still sees everything, which is what the counts prove
+    full = MutationRun(tmp_path, tmp_path / "full", sample=2, seed=3, generate=generate, run=runner)
+    full.run_source(src)
+    assert sum(full.counts().values()) > sum(raw.counts().values())
