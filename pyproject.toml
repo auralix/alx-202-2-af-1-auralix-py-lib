@@ -11,7 +11,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "alx-202-2-af-1-auralix-py-lib"
-version = "0.6.0"
+version = "0.7.0"
 description = "Auralix Python Library - debug probe, bench instruments, serial CLI client, firmware live watch, soak logger, pytest evidence helpers"
 readme = "README.md"
 requires-python = ">=3.11"
