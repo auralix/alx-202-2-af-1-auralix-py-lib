@@ -49,10 +49,12 @@ import hashlib
 import json
 import os
 import random
+import re
 import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
@@ -80,13 +82,60 @@ class MutationError(RuntimeError):
     """The runner itself failed (red baseline, generator missing, source not restored)."""
 
 
+# A comment banner of slashes and asterisks - `//` then a row of `*` - has `/*` as its second and
+# third characters, so universalmutator reads it as the start of a C BLOCK COMMENT. It never finds
+# a `*/`, so everything after the banner is treated as comment and generates nothing at all.
+#
+# This is not theoretical and it is not small. Measured on a 7000-line firmware this library
+# serves: one source had a banner on line 8 and no `*/` anywhere after it, so the whole file
+# produced ZERO mutants; its larger sibling had the same banner on line 8 and its next `*/` at
+# line 5140, so 5131 of its 6997 lines - 73 percent - were never mutated. A source in the C
+# library is dead the same way. None of it was visible from the output, because a swallowed
+# region reports no mutants rather than a gap, so the run prints a kill rate describing only
+# the part it managed to see.
+#
+# One space after the `//` removes the `/*` and changes nothing else - it is a comment either way.
+# The generator runs against that copy, and the banners are put back in the mutants afterwards, so
+# the survivor diffs, which are taken against the REAL source, stay free of it.
+_BANNER = re.compile(r"^//\*+$")
+
+
 def universalmutator(source: Path, mutant_dir: Path) -> list[Path]:
-    """Generate the mutants of ``source`` into ``mutant_dir`` (universalmutator's ``mutate``)."""
+    """Generate the mutants of ``source`` into ``mutant_dir`` (universalmutator's ``mutate``).
+
+    The source is copied and its comment banners de-fanged first - see ``_BANNER`` above for what
+    that is worth. The copy keeps the file's own name, because the generator picks the language
+    from the extension and names the mutants after the stem.
+    """
     exe = shutil.which("mutate") or str(Path(sys.executable).with_name("mutate"))
     mutant_dir.mkdir(parents=True, exist_ok=True)
+    lines = source.read_text(encoding="utf-8", errors="replace").split("\n")
+    banners = {n: line for n, line in enumerate(lines) if _BANNER.fullmatch(line)}
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / source.name
+        defanged = [f"// {line[2:]}" if n in banners else line for n, line in enumerate(lines)]
+        target.write_text("\n".join(defanged), encoding="utf-8")
+        _run_mutate(exe, target, mutant_dir, source)
+    mutants = sorted(
+        mutant_dir.glob(f"{source.stem}.mutant.*{source.suffix}"),
+        key=lambda p: int(p.suffixes[-2][1:]),
+    )
+    for mutant in mutants:
+        # By INDEX, not by pattern: the generator rewrites the de-fanged banner to `// `, so
+        # there is nothing left to match on. A dict lookup also cannot run off the end if a mutant
+        # ever changes the line count.
+        got = mutant.read_text(encoding="utf-8", errors="replace").split("\n")
+        mutant.write_text(
+            "\n".join(banners.get(n, line) for n, line in enumerate(got)), encoding="utf-8"
+        )
+    return mutants
+
+
+def _run_mutate(exe: str, target: Path, mutant_dir: Path, source: Path) -> None:
+    """Run the generator over ``target``; ``source`` only names the file in an error message."""
     try:
         result = subprocess.run(  # noqa: S603 - fixed argv, no shell; exe is resolved above
-            [exe, str(source), "--mutantDir", str(mutant_dir), "--noCheck"],
+            [exe, str(target), "--mutantDir", str(mutant_dir), "--noCheck"],
             capture_output=True,
             text=True,
             check=False,
@@ -97,8 +146,6 @@ def universalmutator(source: Path, mutant_dir: Path) -> list[Path]:
         raise MutationError(
             f"mutate failed for {source}:\n{result.stdout[-800:]}\n{result.stderr[-800:]}"
         )
-    mutants = mutant_dir.glob(f"{source.stem}.mutant.*{source.suffix}")
-    return sorted(mutants, key=lambda p: int(p.suffixes[-2][1:]))
 
 
 class _Normalize(ast.NodeTransformer):

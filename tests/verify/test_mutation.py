@@ -780,3 +780,41 @@ def test_ALX1553_P104_sample_raw_draws_before_the_filter_and_keeps_no_pool(tmp_p
     full = MutationRun(tmp_path, tmp_path / "full", sample=2, seed=3, generate=generate, run=runner)
     full.run_source(src)
     assert sum(full.counts().values()) > sum(raw.counts().values())
+
+
+def test_ALX1553_P700_a_comment_banner_does_not_swallow_the_file_it_heads(tmp_path):
+    """A banner of `//` and asterisks used to take a whole C file's mutant count to zero.
+
+    Its second and third characters are `/*`, so the generator reads the house banner as the start
+    of a block comment, never finds a `*/`, and treats the rest of the file as comment. Nothing in
+    the output says so: a swallowed region reports no mutants rather than reporting a gap, so the
+    run prints a kill rate for the part it happened to see and looks healthy.
+
+    Measured on a firmware this library serves, before the fix: one whole source produced
+    ZERO mutants, and its larger sibling - whose next `*/` sits at line 5140 - had 5131 of its
+    6997 lines, 73 percent, never mutated. A C library source was dead the same way.
+
+    Two assertions, and the second is the one that is easy to lose. Mutating a de-fanged COPY is
+    half the job; the generator also rewrites that copy's banner to a control byte, so the banners
+    have to be put back in the mutants. Survivor diffs are taken against the REAL source, and a
+    mutant that still carried the de-fanged banner would show every banner line as changed, burying
+    the one line that actually differs.
+    """
+    banner = "//" + "*" * 78
+    body = "int f(int a){ if (a > 1) { return a + 2; } return 0; }"
+    src = tmp_path / "banner.c"
+    src.write_text(f"{banner}\n{body}\n", encoding="utf-8")
+    src_lines = src.read_text(encoding="utf-8").split(chr(10))
+
+    mutants = mutation.universalmutator(src, tmp_path / "mut")
+
+    assert mutants, "the banner swallowed the file it heads"
+    for mutant in mutants:
+        got = mutant.read_text(encoding="utf-8").split("\n")
+        assert got[0] == banner, "the banner did not come back byte for byte"
+        differing = [n for n, (a, b) in enumerate(zip(src_lines, got, strict=False)) if a != b]
+        assert 0 not in differing, f"{mutant.name} changes the banner, so its diff is noise"
+
+    assert any(m.read_text(encoding="utf-8").split(chr(10))[1] != body for m in mutants), (
+        "nothing mutated the one line of code, so the file was still being swallowed"
+    )
