@@ -16,10 +16,17 @@ without a compile step: for every mutant of a source file
 
 Kill rate = killed / (killed + survived). Report-only: exit code 0 unless the runner itself fails
 (red baseline, source not restored). 100 % is not the target; the survivor diffs are the output.
+
+A mutation campaign is a LOOP - read the survivors, write tests, ask which are still alive - and
+``--only`` is what makes the second question cheap: it replays named mutants out of
+``<out>/mutants/`` with nothing generated and nothing filtered, because none of that depends on the
+tests and all of it is the cost. A source's mirror test file is run together with its family
+(``test_<stem>_<subject>.py``), so proofs split out of one file still count.
 Usage::
 
     python -m alx.verify.mutation [--out build/mutate] [--sample 100] [--seed 1]
                                   [--no-pool] src.py ...
+    python -m alx.verify.mutation --only build/mutate/survivors src.py ...   # REPLAY
     python -m alx.verify.mutation --tests-dir Test --rebuild-cmd "<build the test DLL>" \
         --check-cmd "clang -fsyntax-only {mutant}" --fingerprint-cmd "<hash of {mutant}>" alxFoo.c
 
@@ -56,7 +63,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -346,6 +353,7 @@ class MutationRun:
         pool: bool = True,
         pool_id: str = "",
         sample_raw: bool = False,
+        only: Iterable[str] | None = None,
     ):
         """Configure the run: repository, output folder, sampling, and the language hooks.
 
@@ -356,6 +364,13 @@ class MutationRun:
         reuses them while the source is unchanged; ``pool_id`` is whatever else the filtering
         depended on, so a cache made with different hooks is not reused. Set ``pool=False`` to
         generate every time.
+
+        ``only`` REPLAYS named mutants that are already under ``<out>/mutants/`` instead of
+        generating and filtering: the names are survivor diff names or mutant file names. That is
+        the loop A mutation campaign actually runs in - test, kill some, ask which of the rest are
+        still alive - and without it every answer costs a full run. Nothing is generated and nothing
+        is filtered, because these mutants were generated and filtered already; what changed is the
+        tests.
 
         ``sample_raw`` takes ``sample`` mutants BEFORE the filter instead of after it. The filter
         compiles every mutant twice - once to check it, once to fingerprint it - and on a large
@@ -381,16 +396,32 @@ class MutationRun:
         self.pool = pool
         self.pool_id = pool_id
         self.sample_raw = sample_raw
+        self.only = {Path(n).name for n in (only or ())}
         self.outcomes: list[Outcome] = []
 
     # -- pieces ---------------------------------------------------------------------------
     def test_command(self, source: Path) -> list[str]:
-        """Return the pytest command for one source: its mirror test file or the tests folder."""
+        """Return the pytest command for one source: its mirror test file plus that file's FAMILY.
+
+        A module's proofs outgrow one file. When the mirror is ``test_mmxMain.py`` the siblings
+        named ``test_mmxMain_<subject>.py`` are its continuation and are run with it - they test the
+        same translation unit and were usually written to kill mutants in it.
+
+        Running only the mirror is not a smaller measurement, it is a WRONG one: a mutant those
+        siblings kill is reported as a survivor, and a survivor list is the thing the next round of
+        test writing is planned from. Measured on the device repository, where a hundred proofs of
+        mmxMain.c live in two such siblings and the lane had never once run them.
+
+        A ``tests_for`` hook that returns a folder is left alone - pytest already walks it.
+        """
         tests = self._tests_for(self.root, source)
+        targets = [tests]
+        if tests.is_file():
+            targets += sorted(p for p in tests.parent.glob(f"{tests.stem}_*.py") if p.is_file())
         return [
             sys.executable, "-m", "pytest", "-q", "-x",
             "-p", "no:randomly", "-p", "no:cacheprovider",
-            "-o", "addopts=", str(tests),
+            "-o", "addopts=", *[str(t) for t in targets],
         ]  # fmt: skip
 
     def _pytest(self, source: Path, timeout_s: float) -> tuple[int, float]:
@@ -460,6 +491,23 @@ class MutationRun:
         digest.update(self.pool_id.encode("utf-8"))
         return digest.hexdigest()
 
+    def replay_names(self, source: Path, key: str) -> set[str]:
+        """Map ``only`` onto this source's mutant FILE names; entries for other sources drop out.
+
+        A survivor is recorded as ``<key>.mutant.<n>.diff`` and the mutant it came from is
+        ``<stem>.mutant.<n><suffix>`` - the inverse of what _write_diff builds, so a survivors
+        folder can be handed straight back in. A plain mutant file name is taken as given.
+        """
+        names = set()
+        for name in self.only:
+            if name.endswith(".diff"):
+                if name.startswith(key):
+                    tail = name.removeprefix(key).removesuffix(".diff")
+                    names.add(f"{source.stem}{tail}{source.suffix}")
+            else:
+                names.add(name)
+        return names
+
     def mutant_pool(self, source: Path, key: str) -> list[Path]:
         """Return the viable mutants of ``source``, from the cache when it is still valid.
 
@@ -474,6 +522,15 @@ class MutationRun:
         numbers as the run that filled the cache.
         """
         target = self.out / "mutants" / key
+        if self.only:
+            wanted = self.replay_names(source, key)
+            missing = sorted(n for n in wanted if not (target / n).exists())
+            if missing:
+                raise MutationError(
+                    f"replay: {len(missing)} named mutants are not under {target} "
+                    f"(first: {missing[0]}) - a replay reuses the run that produced them"
+                )
+            return [target / n for n in sorted(wanted)]
         if self.sample_raw and self.sample:
             generated = self._generate(source, target)
             if len(generated) > self.sample:
@@ -529,7 +586,8 @@ class MutationRun:
     def start(self) -> list[str]:
         """Begin a run: recover a crashed one, then clear the previous run's mutants and results."""
         restored = self.recover()
-        for stale in ("mutants", "survivors"):
+        stale_dirs = ("survivors",) if self.only else ("mutants", "survivors")
+        for stale in stale_dirs:  # a replay REUSES mutants/, which is the whole point of it
             shutil.rmtree(self.out / stale, ignore_errors=True)
         for stale_file in ("report.txt", "results.json"):
             (self.out / stale_file).unlink(missing_ok=True)
@@ -547,7 +605,7 @@ class MutationRun:
             return []  # nothing to plant, so nothing to time: a baseline run would be pure cost
         base_s = self.baseline(source)
         timeout_s = max(self.min_timeout_s, self.timeout_factor * base_s)
-        if self.sample and len(mutants) > self.sample:
+        if self.sample and not self.only and len(mutants) > self.sample:
             picked = random.Random(self.seed).sample(mutants, self.sample)  # noqa: S311
             mutants = sorted(picked)
         original = source.read_bytes()
@@ -680,6 +738,18 @@ def clear_pycache(package_dir: Path) -> None:
         shutil.rmtree(cache, ignore_errors=True)
 
 
+def read_only_list(path: Path) -> list[str]:
+    """Read a replay list: every ``*.diff`` in a folder, or one name per line from a file."""
+    if path.is_dir():
+        names = sorted(p.name for p in path.glob("*.diff"))
+    else:
+        names = [line.strip() for line in path.read_text(encoding="utf-8").splitlines()]
+        names = [n for n in names if n and not n.startswith("#")]
+    if not names:
+        raise MutationError(f"replay list is empty: {path}")
+    return names
+
+
 def main(argv: list[str] | None = None) -> int:
     """Command line entry; see the module docstring."""
     parser = argparse.ArgumentParser(prog="python -m alx.verify.mutation", description=__doc__)
@@ -715,8 +785,19 @@ def main(argv: list[str] | None = None) -> int:
         "--rebuild-cmd",
         help="runs after planting and after the restore; non-zero exit = KILLED_COMPILE",
     )
+    parser.add_argument(
+        "--only",
+        help="REPLAY: a survivors folder, or a file of mutant names one per line. Re-tests those "
+        "mutants from <out>/mutants/ without generating or filtering - the cheap way to ask which "
+        "survivors are still alive after a round of test writing",
+    )
     args = parser.parse_args(argv)
     root = Path(args.root).resolve()
+    try:
+        only = read_only_list(Path(args.only)) if args.only else None
+    except MutationError as ex:
+        sys.stdout.write(f"MUTATION RUN FAILED: {ex}\n")
+        return 1
     # what the pool is valid for besides the source: the hooks that decided stillborn / equivalent
     pool_id = "|".join(str(x) for x in (args.check_cmd, args.fingerprint_cmd, args.tests_dir))
     run = MutationRun(
@@ -735,6 +816,7 @@ def main(argv: list[str] | None = None) -> int:
         rebuild=rebuild_command(args.rebuild_cmd, root) if args.rebuild_cmd else None,
         pool=not args.no_pool,
         pool_id=pool_id,
+        only=only,
     )
     try:
         for rel in run.start():

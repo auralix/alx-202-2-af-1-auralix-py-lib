@@ -31,6 +31,11 @@ Proofs (ALX-1544):
        last - while one inside a nested loop or a try, or not last, is kept
   P189 the mutant pool is generated and filtered ONCE per source: reused while the source and the hooks are
        unchanged (same verdicts, no second generation), rebuilt when either changes, skipped with pool=False
+  P214 the mirror test file brings its whole FAMILY (test_<stem>_<subject>.py), because a mutant those
+       siblings kill was being reported as a survivor; a tests FOLDER is left alone
+  P215 REPLAY (--only): named mutants are re-tested straight out of <out>/mutants/ with nothing generated
+       and nothing filtered, a survivor can come back KILLED, a name that is not there is an error, survivor
+       diff names map back to their mutants, and the list comes from a folder or a file
 """
 
 import json
@@ -818,3 +823,200 @@ def test_ALX1553_P700_a_comment_banner_does_not_swallow_the_file_it_heads(tmp_pa
     assert any(m.read_text(encoding="utf-8").split(chr(10))[1] != body for m in mutants), (
         "nothing mutated the one line of code, so the file was still being swallowed"
     )
+
+
+def test_ALX1544_P214_the_mirror_file_brings_its_whole_family(tmp_path):
+    """A module's proofs outgrow one file, and the lane has to run all of them.
+
+    This is not a nicety. The device repository keeps a hundred proofs of one translation unit in
+    test_mmxMain_can_id0.py and test_mmxMain_can_payload.py, and the lane ran only
+    test_mmxMain.py - so every mutant those proofs kill was reported as a SURVIVOR, and the
+    survivor list is exactly what the next round of test writing is planned from. A wrong
+    measurement, not a smaller one.
+    """
+    tests = tmp_path / "Test"
+    tests.mkdir()
+    for name in (
+        "test_alxMath.py",
+        "test_alxMath_can.py",
+        "test_alxMath_store.py",
+        "test_alxMathematics.py",
+        "test_other.py",
+    ):
+        (tests / name).write_text("", encoding="ascii")
+    src = tmp_path / "Usr" / "alxMath.c"
+    src.parent.mkdir()
+    src.write_text("", encoding="ascii")
+
+    run = MutationRun(tmp_path, tmp_path / "out", tests_dir="Test")
+    command = run.test_command(src)
+
+    assert [Path(a).name for a in command if a.endswith(".py")] == [
+        "test_alxMath.py",
+        "test_alxMath_can.py",
+        "test_alxMath_store.py",
+    ], "the mirror and its underscore family, and nothing else"
+    assert "test_alxMathematics.py" not in " ".join(command), (
+        "a longer NAME is a different module, not a member of the family - the separator is what "
+        "tells them apart"
+    )
+
+
+def test_ALX1544_P214_a_tests_folder_is_left_alone(tmp_path):
+    """When the hook falls back to the folder, pytest already walks it - globbing it would be wrong."""
+    (tmp_path / "Test").mkdir()
+    src = tmp_path / "Usr" / "alxMath.c"
+    src.parent.mkdir()
+    src.write_text("", encoding="ascii")
+
+    run = MutationRun(tmp_path, tmp_path / "out", tests_dir="Test")
+    command = run.test_command(src)
+
+    assert command[-1] == str(tmp_path / "Test")
+
+
+# =====================================================================
+# P215 - REPLAY: re-test named mutants without generating them again
+# =====================================================================
+
+
+def _replay_run(tmp_path, tc, only, **kw):
+    return MutationRun(
+        tmp_path,
+        tmp_path / "out",
+        generate=c_generate,
+        run=tc.run_tests,
+        tests_dir="Test",
+        check=tc.check,
+        fingerprint_of=tc.fingerprint,
+        only=only,
+        **kw,
+    )
+
+
+def test_ALX1544_P215_a_replay_reuses_the_mutants_of_the_run_that_found_them(tmp_path):
+    """The loop a campaign actually runs in: test, kill some, ask which of the rest are alive.
+
+    Generating and filtering is nearly all of a C run - thousands of mutants, two compiles each -
+    and none of it depends on the tests. So a replay does neither: it plants the named mutants
+    straight out of <out>/mutants/. What changed is the tests, and that is the only thing re-measured.
+    """
+    src = c_project(tmp_path)
+    tc = CToolchain(src)
+    first = _replay_run(tmp_path, tc, only=None)
+    first.start()
+    results = first.run_source(src)
+    survivors = [r.diff for r in results if r.status == "SURVIVED"]
+    assert survivors, "the scratch project must leave a survivor for this to mean anything"
+
+    generated: list[Path] = []
+
+    def must_not_generate(source, mutant_dir):
+        generated.append(source)
+        raise AssertionError("a replay generated mutants")
+
+    replay = MutationRun(
+        tmp_path,
+        tmp_path / "out",
+        generate=must_not_generate,
+        run=tc.run_tests,
+        tests_dir="Test",
+        check=tc.check,
+        fingerprint_of=tc.fingerprint,
+        only=survivors,
+    )
+    replay.start()
+    again = replay.run_source(src)
+
+    assert not generated, "nothing is generated on a replay"
+    assert [r.mutant for r in again] == sorted(
+        f"alxMath{Path(d).stem.removeprefix('alxMath')}.c" for d in survivors
+    )
+    assert {r.status for r in again} == {"SURVIVED"}, (
+        "the tests did not change, so neither did these"
+    )
+    assert (tmp_path / "out" / "mutants" / "alxMath").is_dir(), (
+        "start() kept what the replay reuses"
+    )
+
+
+def test_ALX1544_P215_a_replay_sees_a_mutant_that_the_new_tests_now_kill(tmp_path):
+    """The answer a replay exists to give, and it must be able to differ from the first run's."""
+    src = c_project(tmp_path)
+    tc = CToolchain(src)
+    run = _replay_run(tmp_path, tc, only=None)
+    run.start()
+    survivors = [r.diff for r in run.run_source(src) if r.status == "SURVIVED"]
+
+    class Stricter(CToolchain):
+        """The same project after someone wrote a test that notices the change."""
+
+        def run_tests(self, cmd, cwd, capture_output, text, timeout, check, env):
+            body = self.source.read_text(encoding="utf-8")
+            self.tests.append(cmd[-1])
+            rc = 0 if body == C_SRC else 1  # any change at all is now noticed
+            return subprocess.CompletedProcess(cmd, rc, stdout="", stderr="")
+
+    strict = Stricter(src)
+    replay = _replay_run(tmp_path, strict, only=survivors)
+    replay.start()
+    again = replay.run_source(src)
+
+    assert {r.status for r in again} == {"KILLED"}, "the survivor list is not a permanent verdict"
+    assert src.read_text(encoding="utf-8") == C_SRC, "and the source is put back either way"
+
+
+def test_ALX1544_P215_a_name_that_is_not_there_is_an_error_not_a_silent_skip(tmp_path):
+    """A replay list that quietly matched nothing would report a clean run over zero mutants."""
+    src = c_project(tmp_path)
+    tc = CToolchain(src)
+    run = _replay_run(tmp_path, tc, only=["alxMath.mutant.999.c"])
+    run.start()
+
+    with pytest.raises(mutation.MutationError, match="not under"):
+        run.run_source(src)
+
+
+def test_ALX1544_P215_replay_names_map_survivor_diffs_back_to_their_mutants(tmp_path):
+    """The inverse of _write_diff, so a survivors folder can be handed straight back in."""
+    src = c_project(tmp_path)
+    run = _replay_run(
+        tmp_path,
+        CToolchain(src),
+        only=[
+            "alxMath.mutant.1.diff",  # this source
+            "other.pkg.thing.mutant.7.diff",  # a different source in the same campaign
+            "alxMath.mutant.2.c",  # a mutant file name, taken as given
+        ],
+    )
+
+    assert run.replay_names(src, "alxMath") == {"alxMath.mutant.1.c", "alxMath.mutant.2.c"}
+
+
+def test_ALX1544_P215_read_only_list_takes_a_folder_or_a_file(tmp_path):
+    folder = tmp_path / "survivors"
+    folder.mkdir()
+    (folder / "b.mutant.2.diff").write_text("", encoding="ascii")
+    (folder / "a.mutant.1.diff").write_text("", encoding="ascii")
+    (folder / "notes.txt").write_text("", encoding="ascii")
+
+    assert mutation.read_only_list(folder) == ["a.mutant.1.diff", "b.mutant.2.diff"]
+
+    listing = tmp_path / "list.txt"
+    listing.write_text("# the ones to re-check\na.mutant.1.c\n\nb.mutant.2.c\n", encoding="ascii")
+    assert mutation.read_only_list(listing) == ["a.mutant.1.c", "b.mutant.2.c"]
+
+    empty = tmp_path / "empty.txt"
+    empty.write_text("# nothing here\n", encoding="ascii")
+    with pytest.raises(mutation.MutationError, match="replay list is empty"):
+        mutation.read_only_list(empty)
+
+
+def test_ALX1544_P215_main_reports_an_empty_replay_list_instead_of_crashing(tmp_path, capsys):
+    empty = tmp_path / "empty.txt"
+    empty.write_text("", encoding="ascii")
+
+    rc = mutation.main(["x.py", "--root", str(tmp_path), "--only", str(empty)])
+
+    assert rc == 1
+    assert "replay list is empty" in capsys.readouterr().out
