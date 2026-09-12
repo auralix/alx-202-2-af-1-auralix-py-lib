@@ -14,6 +14,8 @@ Proofs (ALX-1553):
   P211 a missing STM32_Programmer_CLI raises ProbeError naming the variable that overrides it
   P212 the CubeProgrammer adapter satisfies the DebugProbe contract, and the two are
        interchangeable behind it
+  P213 the target's sector map reaches the adapter that erases by sector, and a bench that
+       describes its part does not break the adapter that does not need it
 """
 
 from pathlib import Path
@@ -145,3 +147,44 @@ def test_ALX1544_P75_probe_result_defaults():
     assert r.transcript == "transcript"
     assert r.read_back == {}
     assert ProbeResult("t", {1: b"\x00"}).read_back == {1: b"\x00"}
+
+
+# the four smallest sectors of a part that starts with them - shape only, no real part named
+SECTORS = [(0, 0x08000000, 0x4000), (1, 0x08004000, 0x4000), (2, 0x08008000, 0x4000)]
+
+
+def test_ALX1553_P213_the_sector_map_reaches_the_adapter_that_erases_by_sector(
+    fake_cube_exe, tmp_path, monkeypatch
+):
+    """The layout is the TARGET's, so the bench states it once and open() routes it.
+
+    Without this the sector-erasing adapter refuses every ranged erase, which is not a theoretical
+    state: it is what the bench actually hit the first time it selected this tool.
+    """
+    monkeypatch.setenv("ALX_HIL_DEBUG_PROBE", "cubeprog")
+
+    probe = debug_probe.open("EXAMPLE-MCU", tmp_path, sector_map=SECTORS)
+
+    # narrowed deliberately: sector_map is NOT on the DebugProbe contract and must not be, or every
+    # caller would start reaching for it. It belongs to the adapter that needs it, and mypy is the
+    # thing that keeps that true.
+    assert isinstance(probe, CubeProg)
+    assert probe.sector_map == SECTORS
+    assert probe._sectors_for(0x08004000, 0x0800BFFF) == [1, 2]
+
+
+def test_ALX1553_P213_a_bench_that_states_its_layout_still_opens_a_range_erasing_tool(
+    fake_exe, tmp_path, monkeypatch
+):
+    """A bench must not have to ask which tool it is about to get.
+
+    open() takes the map as its own argument rather than through **options precisely so that the
+    SAME call works for both kinds - forwarding it blindly would make this a TypeError and force
+    the caller into `if kind == ...`, which is the thing this package exists to prevent.
+    """
+    monkeypatch.setenv("ALX_HIL_DEBUG_PROBE", "jlink")
+
+    probe = debug_probe.open("EXAMPLE-MCU", tmp_path, sector_map=SECTORS)
+
+    assert isinstance(probe, JLink)
+    assert not hasattr(probe, "sector_map"), "a tool that erases a byte range never sees the map"

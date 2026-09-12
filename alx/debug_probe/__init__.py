@@ -55,7 +55,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from alx.errors import ProbeError
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Sequence
 
 ENV_KIND = "ALX_HIL_DEBUG_PROBE"
 ENV_SERIAL = "ALX_HIL_DEBUG_PROBE_SN"
@@ -123,6 +123,7 @@ def open(  # noqa: A001 - the module-level open() of a resource is the stdlib id
     kind: str | None = None,
     serial: str | None = None,
     exe: str | Path | None = None,
+    sector_map: Sequence[tuple[int, int, int]] | None = None,
     **options: Any,
 ) -> DebugProbe:
     """Open the bench's debug probe, bound to the target MCU and the run directory.
@@ -130,6 +131,12 @@ def open(  # noqa: A001 - the module-level open() of a resource is the stdlib id
     ``kind`` defaults to ``ALX_HIL_DEBUG_PROBE`` (then ``jlink``), ``serial`` to
     ``ALX_HIL_DEBUG_PROBE_SN``; ``exe`` overrides the adapter's own tool lookup. ``options`` go to
     the adapter (e.g. ``iface``, ``speed_khz``).
+
+    ``sector_map`` is the TARGET's flash layout, ``[(index, start_addr, length), ...]``, and so is
+    the caller's knowledge rather than the library's. It is handed only to an adapter that erases by
+    sector code; a tool that erases a byte range natively never sees it. Passing it is how a bench
+    describes its part ONCE and stays free to change tools, which is the whole point of this
+    package - a device repo that had to write ``if kind == ...`` here would have lost that.
     """
     kind = (kind or os.environ.get(ENV_KIND) or DEFAULT_KIND).lower()
     serial = serial or os.environ.get(ENV_SERIAL) or None
@@ -151,5 +158,5 @@ def open(  # noqa: A001 - the module-level open() of a resource is the stdlib id
                 "STM32_Programmer_CLI not found: install STM32CubeProgrammer or set "
                 "ALX_HIL_CUBEPROG"
             )
-        return CubeProg(exe_path, mcu, run_dir, serial=serial, **options)
+        return CubeProg(exe_path, mcu, run_dir, serial=serial, sector_map=sector_map, **options)
     raise ProbeError(f"unknown debug probe kind {kind!r} (known: {', '.join(KNOWN_KINDS)})")
