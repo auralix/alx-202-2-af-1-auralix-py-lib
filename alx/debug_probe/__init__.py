@@ -13,6 +13,13 @@ tool::
 
 Contract, implemented by every adapter (``DebugProbe``), by capability group:
 
+Two adapters exist. ``jlink`` drives SEGGER Commander; ``cubeprog`` drives STM32CubeProgrammer's
+CLI and can reach the target through the SAME J-Link pod (``iface='JLINK'``) with ST's loader, so
+a bench can hold the hardware fixed and change only the flash algorithm. They differ in two ways
+worth knowing before choosing: ``cubeprog`` erases BY SECTOR and so needs a ``sector_map`` for a
+byte-range ``erase``, and it makes no claim to read memory while the core runs
+(``mem_while_running`` is False), so ``alx.fw.live_watch`` will not pick it up by accident.
+
 * connection: ``kind`` (the tool name the bench selects with ``ALX_HIL_DEBUG_PROBE``), the probe
   serial number, interface and speed as constructor arguments.
 * programmer: ``erase_all(hold)`` erases the whole flash; ``erase(start, end, hold, read_back)``
@@ -53,7 +60,7 @@ if TYPE_CHECKING:
 ENV_KIND = "ALX_HIL_DEBUG_PROBE"
 ENV_SERIAL = "ALX_HIL_DEBUG_PROBE_SN"
 DEFAULT_KIND = "jlink"
-KNOWN_KINDS = ("jlink",)
+KNOWN_KINDS = ("jlink", "cubeprog")
 
 
 @dataclass
@@ -135,4 +142,14 @@ def open(  # noqa: A001 - the module-level open() of a resource is the stdlib id
                 "JLink.exe not found: install SEGGER J-Link software or set ALX_HIL_JLINK"
             )
         return JLink(exe_path, mcu, run_dir, serial=serial, **options)
+    if kind == "cubeprog":
+        from alx.debug_probe.cubeprog import CubeProg  # noqa: PLC0415 - adapters load on demand
+
+        exe_path = Path(exe) if exe else CubeProg.find_exe()
+        if exe_path is None:
+            raise ProbeError(
+                "STM32_Programmer_CLI not found: install STM32CubeProgrammer or set "
+                "ALX_HIL_CUBEPROG"
+            )
+        return CubeProg(exe_path, mcu, run_dir, serial=serial, **options)
     raise ProbeError(f"unknown debug probe kind {kind!r} (known: {', '.join(KNOWN_KINDS)})")
