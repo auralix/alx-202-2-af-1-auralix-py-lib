@@ -19,7 +19,7 @@ Outcome = Literal["passed", "failed", "error", "skipped", "xfail"]
 
 @dataclass(frozen=True)
 class CaseResult:
-    """One reported case, preserving its proof properties and diagnostic."""
+    """One JUnit testcase record, preserving properties and distinct diagnostics."""
 
     name: str
     module: str
@@ -38,24 +38,29 @@ def read_cases(path: Path) -> list[CaseResult]:
     results = []
     for case in root.iter("testcase"):
         outcome: Outcome = "passed"
-        reason = ""
+        reasons = []
         states: tuple[tuple[str, Outcome], ...] = (
             ("error", "error"),
             ("failure", "failed"),
             ("skipped", "skipped"),
         )
         for tag, status in states:
-            detail = case.find(tag)
-            if detail is not None:
-                outcome = "xfail" if detail.get("type") == "pytest.xfail" else status
+            for detail in case.findall(tag):
+                if outcome == "passed":
+                    outcome = (
+                        "xfail"
+                        if tag == "skipped" and detail.get("type") == "pytest.xfail"
+                        else status
+                    )
                 reason = detail.get("message", "") or (detail.text or "").strip()
-                break
+                if reason and reason not in reasons:
+                    reasons.append(reason)
         results.append(
             CaseResult(
                 name=case.attrib["name"],
                 module=case.get("classname", ""),
                 outcome=outcome,
-                reason=reason,
+                reason="\n".join(reasons),
                 seconds=float(case.get("time", "0")),
                 properties=tuple(
                     (p.get("name", ""), p.get("value", ""))

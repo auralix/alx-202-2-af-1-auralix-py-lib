@@ -64,8 +64,11 @@ its lane, never skips it.
     `c_style`, `coverage_gate`, `mutation`, `public_gate`). A gate a C or C# repository needs lives here too: this
     repository has no C file to run `c_style` on, its consumers do, and one implementation with one
     test suite beats a copy per repository
-  - `alx.verify.results`: reads local pytest JUnit cases, keeping failures, expected failures,
-    skips, diagnostics and repeated requirement properties distinct. Execution location and
+  - `alx.verify.results`: reads local pytest JUnit testcase records, keeping failures, expected
+    failures, skips and repeated requirement properties distinct. Each record retains all distinct
+    diagnostic messages, ordered by severity (error, failure, skip); repeated messages are kept once.
+    Pytest may emit separate records for a body failure and its teardown error; neither is dropped
+    or merged by name. Execution location and
     functionality grouping belong to the consumer's runner/report, not to the XML reader.
   - `alx.serial_logger` (days-long UART logging, the soak mode), `alx.errors`
 - Tests mirror the package: `tests/<package>/test_<module>.py` (a package, so tools can scope rules),

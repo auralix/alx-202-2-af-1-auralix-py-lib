@@ -43,3 +43,40 @@ def test_ALX1564_P202_empty_or_unrelated_report_is_not_success(tmp_path, xml):
     report.write_text(xml)
     with pytest.raises(ValueError, match=r"no test cases|not a JUnit report"):
         read_cases(report)
+
+
+@pytest.mark.parametrize(
+    ("details", "outcome", "reasons"),
+    [
+        (
+            '<failure message="body failed"/><error message="cleanup failed"/>',
+            "error",
+            ["cleanup failed", "body failed"],
+        ),
+        (
+            '<error message="first cleanup failed"/><error>second cleanup failed</error>',
+            "error",
+            ["first cleanup failed", "second cleanup failed"],
+        ),
+        (
+            '<skipped type="pytest.xfail" message="known defect"/>'
+            '<skipped type="pytest.xfail" message="known defect"/>',
+            "xfail",
+            ["known defect"],
+        ),
+        (
+            '<skipped type="pytest.xfail" message="known defect"/>'
+            '<error message="unexpected cleanup failure"/>',
+            "error",
+            ["unexpected cleanup failure", "known defect"],
+        ),
+    ],
+)
+def test_ALX1564_P204_multiple_phase_diagnostics_remain_visible(
+    tmp_path, details, outcome, reasons
+):
+    report = tmp_path / "report.xml"
+    report.write_text(f'<testsuite><testcase name="check">{details}</testcase></testsuite>')
+    (case,) = read_cases(report)
+    assert case.outcome == outcome
+    assert case.reason.splitlines() == reasons
