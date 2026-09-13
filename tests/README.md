@@ -6,6 +6,25 @@ Python's tools.
 
 This file holds rules and facts only; task details belong to the Jira task and its Task folder notes.
 
+## Verification architecture
+
+| Block | Responsibility | Implementation here |
+|---|---|---|
+| Verification Runner | Select stages, configure processes, propagate failures | root `noxfile.py` |
+| Host Test Application | Check library behavior over fake transports and tools | `tests/<package>/test_<module>.py` |
+| Test Harness | Model external boundaries and own fixture lifecycle | module-local fakes, `tests/conftest.py` |
+| Shared Mechanisms | Reusable transport, build, tool and evidence operations | package `alx/`, also used by consumers |
+| Build and Evidence Store | Keep outputs separate by stage and interpreter | root `build/` |
+
+Runners and behavioral tests never import `conftest.py`. Shared mechanisms have no dependency
+on test fixtures or consumer-specific configuration. Host and target describe where the code
+under test executes. This suite has no Target Test Application; fake transports prove protocol
+logic and error handling, while physical qualification belongs to a consumer's target suite.
+
+Use snake_case for Python modules/helpers, CapWords for classes and UPPER_CASE for constants.
+Keep proof IDs stable and tests arranged like the package. Consumers retain their language's
+folder convention, such as `Test/` for C, while sharing these responsibilities and stage names.
+
 ## Run
 
 ```
@@ -45,6 +64,9 @@ its lane, never skips it.
     `c_style`, `coverage_gate`, `mutation`, `public_gate`). A gate a C or C# repository needs lives here too: this
     repository has no C file to run `c_style` on, its consumers do, and one implementation with one
     test suite beats a copy per repository
+  - `alx.verify.results`: reads local pytest JUnit cases, keeping failures, expected failures,
+    skips, diagnostics and repeated requirement properties distinct. Execution location and
+    functionality grouping belong to the consumer's runner/report, not to the XML reader.
   - `alx.serial_logger` (days-long UART logging, the soak mode), `alx.errors`
 - Tests mirror the package: `tests/<package>/test_<module>.py` (a package, so tools can scope rules),
   imports through `pythonpath = "."`, over fakes: a scripted serial port (`owon_p4603`, `cli`,

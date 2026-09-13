@@ -136,12 +136,12 @@ def test_ALX1544_P178_the_fingerprint_of_a_file_that_does_not_compile_is_none(cl
 
 
 def test_ALX1544_P179_load_groups_imports_the_consumers_declaration(tmp_path):
-    module = tmp_path / "fake_conftest.py"
+    module = tmp_path / "fake_host_harness.py"
     module.write_text(
         "from pathlib import Path\nDLL_GROUPS = [(Path('a.dll'), [Path('a.c')], lambda: None)]\n",
         encoding="ascii",
     )
-    groups = mh.load_groups("fake_conftest:DLL_GROUPS", [tmp_path])
+    groups = mh.load_groups("fake_host_harness:DLL_GROUPS", [tmp_path])
     assert len(groups) == 1
     assert groups[0][0] == Path("a.dll")
     sys.path.remove(str(tmp_path))
