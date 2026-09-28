@@ -36,6 +36,16 @@ Proofs (ALX-1544):
   P215 REPLAY (--only): named mutants are re-tested straight out of <out>/mutants/ with nothing generated
        and nothing filtered, a survivor can come back KILLED, a name that is not there is an error, survivor
        diff names map back to their mutants, and the list comes from a folder or a file
+
+Proofs (ALX-1564):
+  P301 mirror_name(): the C module prefix goes (in Python it is the folder) and the rest becomes snake_case:
+       alxFifo -> fifo, alxParamKvStore -> param_kv_store, alxRtc_Global -> rtc_global, fooMain -> main
+  P302 c_tests_for(): a C source's PEP 8 mirror under the tests folder with its folders in snake_case, for a
+       root-level source, an Ext/ source, a McuStm32/ source and a product source root (Usr/Foo -> foo/);
+       the spelling before the rename (test_<stem>.py) still maps, and without a mirror the whole folder runs
+  P303 under the C mirror a sibling that is the mirror of another source is not family: test_lin_fun.py
+       belongs to alxLinFun.c and does not run with test_lin.py, test_lin_variants.py does
+  P304 an unknown mirror is refused; main() passes --mirror on and defaults to python
 """
 
 import json
@@ -1020,3 +1030,111 @@ def test_ALX1544_P215_main_reports_an_empty_replay_list_instead_of_crashing(tmp_
 
     assert rc == 1
     assert "replay list is empty" in capsys.readouterr().out
+
+
+# =====================================================================
+# P301-P304 - the C mirror: the module prefix is the folder, the name is PEP 8
+# =====================================================================
+
+
+def _touch(root: Path, *rels: str) -> None:
+    for rel in rels:
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text("", encoding="ascii")
+
+
+def test_ALX1564_P301_mirror_name_drops_the_c_prefix_and_snakes_the_rest():
+    expected = {
+        "alxFifo": "fifo",
+        "alxParamKvStore": "param_kv_store",
+        "alxFiltGlitchUint32": "filt_glitch_uint32",
+        "alxIna228": "ina228",
+        "alxNtcg103jf103ft1s": "ntcg103jf103ft1s",
+        "alxRtc_Global": "rtc_global",
+        "alxParamItem_reset": "param_item_reset",
+        "fooMain": "main",
+        "ab2Main_can_rx": "main_can_rx",
+        "main": "main",
+        "Foo": "foo",
+    }
+    assert {stem: mutation.mirror_name(stem) for stem in expected} == expected
+
+
+def test_ALX1564_P302_c_tests_for_mirrors_a_c_repository(tmp_path):
+    _touch(
+        tmp_path,
+        "alxFifo.c", "Ext/alxIna228.c", "Mcu/McuStm32/alxAdc_McuStm32.c", "alxMath.c", "alxOther.c",
+        "Usr/Foo/fooMain.c",
+        "Test/tests/host/alx/test_fifo.py", "Test/tests/host/alx/ext/test_ina228.py",
+        "Test/tests/host/alx/mcu/mcu_stm32/test_adc_mcu_stm32.py",
+        "Test/tests/host/foo/test_main.py", "Test/old/test_alxMath.py",
+    )  # fmt: skip
+    f = mutation.c_tests_for
+    alx = tmp_path / "Test" / "tests" / "host" / "alx"
+    assert f(tmp_path, tmp_path / "alxFifo.c", "Test/tests/host/alx") == alx / "test_fifo.py"
+    assert f(tmp_path, tmp_path / "Ext" / "alxIna228.c", "Test/tests/host/alx") == (
+        alx / "ext" / "test_ina228.py"
+    ), "the source's folders in snake_case"
+    assert f(
+        tmp_path, tmp_path / "Mcu" / "McuStm32" / "alxAdc_McuStm32.c", "Test/tests/host/alx"
+    ) == (alx / "mcu" / "mcu_stm32" / "test_adc_mcu_stm32.py"), (
+        "a folder of two words gets its underscore too"
+    )
+    assert f(tmp_path, tmp_path / "Usr" / "Foo" / "fooMain.c", "Test/tests/host") == (
+        tmp_path / "Test" / "tests" / "host" / "foo" / "test_main.py"
+    ), "a product source root (Usr/) is not repeated under the tests folder"
+    assert f(tmp_path, tmp_path / "alxMath.c", "Test/old") == tmp_path / "Test" / "old" / (
+        "test_alxMath.py"
+    ), "the spelling before the rename still maps"
+    assert f(tmp_path, tmp_path / "alxOther.c", "Test/tests/host/alx") == alx, (
+        "no mirror: the whole folder runs"
+    )
+
+
+def test_ALX1564_P303_a_sibling_that_mirrors_another_source_is_not_family(tmp_path):
+    """Under the C mirror the separator of a subject is the separator of a word too.
+
+    test_lin_fun.py would be family of test_lin.py, and it is the mirror of alxLinFun.c. Running it
+    with alxLin.c's mutants costs time and measures nothing; a subject (test_lin_variants.py) stays.
+    """
+    _touch(
+        tmp_path,
+        "alxLin.c", "alxLinFun.c", "alxLin.h",
+        "tests/test_lin.py", "tests/test_lin_variants.py", "tests/test_lin_fun.py",
+    )  # fmt: skip
+    run = MutationRun(tmp_path, tmp_path / "out", mirror="c")
+
+    command = run.test_command(tmp_path / "alxLin.c")
+
+    assert [Path(a).name for a in command if a.endswith(".py")] == [
+        "test_lin.py",
+        "test_lin_variants.py",
+    ]
+
+
+def test_ALX1564_P304_an_unknown_mirror_is_refused_and_main_passes_it_on(tmp_path, monkeypatch):
+    with pytest.raises(ValueError, match="unknown mirror 'java'"):
+        MutationRun(tmp_path, tmp_path / "out", mirror="java")
+
+    calls: list[dict[str, object]] = []
+
+    class FakeRun:
+        def __init__(self, root, out, **hooks):
+            calls.append(dict(hooks))
+
+        def start(self):
+            return []
+
+        def run_source(self, source):
+            return []
+
+        def report(self):
+            return ""
+
+        def nothing_tested(self):
+            return None
+
+    monkeypatch.setattr(mutation, "MutationRun", FakeRun)
+    assert mutation.main(["--root", str(tmp_path), "--mirror", "c", "alxMath.c"]) == 0
+    assert mutation.main(["--root", str(tmp_path), "alxMath.c"]) == 0
+    assert [call["mirror"] for call in calls] == ["c", "python"]

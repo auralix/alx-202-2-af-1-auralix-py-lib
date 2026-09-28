@@ -170,7 +170,7 @@ its lane, never skips it.
 #### MUTATE
 - **Tools**
 	- universalmutator (mutant generation, the C library's generator)
-	- `alx.verify.mutation`: plant, run the mirror test module, classify, restore; filters = parse check + normalized-AST fingerprint (docstrings, annotations, positions ignored); crash recovery from `build/mutate/backup/`; hooks `--check-cmd`, `--fingerprint-cmd`, `--rebuild-cmd` and `--tests-dir` for compiled languages (the C library)
+	- `alx.verify.mutation`: plant, run the mirror test module, classify, restore; filters = parse check + normalized-AST fingerprint (docstrings, annotations, positions ignored); crash recovery from `build/mutate/backup/`; hooks `--check-cmd`, `--fingerprint-cmd`, `--rebuild-cmd` and `--tests-dir` for compiled languages (the C library); `--mirror c` maps a C source to its PEP 8 test, the module prefix as the folder (`alxFifo.c` -> `test_fifo.py`, `Ext/alxIna228.c` -> `ext/test_ina228.py`)
 - **Files - Code**
 	- `noxfile.py` -> `mutate`
 	- `alx/verify/mutation.py`

@@ -25,7 +25,7 @@ tests and all of it is the cost. A source's mirror test file is run together wit
 Usage::
 
     python -m alx.verify.mutation [--out build/mutate] [--sample 100] [--seed 1]
-                                  [--no-pool] src.py ...
+                                  [--no-pool] [--mirror c] src.py ...
     python -m alx.verify.mutation --only build/mutate/survivors src.py ...   # REPLAY
     python -m alx.verify.mutation --tests-dir Test --rebuild-cmd "<build the test DLL>" \
         --check-cmd "clang -fsyntax-only {mutant}" --fingerprint-cmd "<hash of {mutant}>" alxFoo.c
@@ -39,7 +39,11 @@ fingerprint and a parse error the check.
 The tests of a source default to its mirror in the tests folder (``--tests-dir``, default
 ``tests``): ``alx/pkg/mod.py`` maps to ``tests/pkg/test_mod.py``, ``alx/pkg/__init__.py`` to
 ``tests/pkg/test_pkg.py``, ``alx/mod.py`` and a root-level ``mod.c`` to ``tests/test_mod.py``;
-without a mirror the whole tests folder runs. Each run is
+without a mirror the whole tests folder runs. ``--mirror c`` is the mirror of a C repository, whose
+module prefix is a folder and whose test names are PEP 8: the source's folders in snake_case, then
+``test_`` and :func:`mirror_name` of the stem, so ``alxFifo.c`` maps to ``<tests>/test_fifo.py``,
+``Ext/alxIna228.c`` to ``<tests>/ext/test_ina228.py`` and ``Usr/Foo/fooMain.c`` to
+``<tests>/foo/test_main.py`` (see :func:`c_tests_for`). Each run is
 ``python -m pytest -q -x`` without random ordering and without the cache; bytecode caches are
 disabled while mutants are planted. The original of a planted source is kept under
 ``<out>/backup/`` until it is restored, so a run killed mid-plant (a reboot) is repaired by the
@@ -332,6 +336,48 @@ def default_tests_for(root: Path, source: Path, tests_dir: str = "tests") -> Pat
     return candidate if candidate.exists() else tests
 
 
+MIRRORS = ("python", "c")
+
+
+def _snake(name: str) -> str:
+    """Return ``name`` in snake_case: ``_`` before a capital that follows a lowercase or digit."""
+    return re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", name).lower()
+
+
+def mirror_name(stem: str) -> str:
+    """Return the PEP 8 name a C module's test takes: its prefix dropped, the rest in snake_case.
+
+    The prefix (the lowercase letters and digits before the first capital: ``alx``, ``foo``,
+    ``ab2``) is what C spells instead of a package, so in Python it is the folder and not part of
+    the file name. ``alxFifo`` gives ``fifo``, ``alxParamKvStore`` ``param_kv_store``,
+    ``alxFiltGlitchUint32`` ``filt_glitch_uint32`` and ``fooMain`` ``main``; an underscore of the
+    C name stays one, ``alxRtc_Global`` gives ``rtc_global``.
+    """
+    prefix = re.match(r"[a-z0-9]*(?=[A-Z])", stem)
+    return _snake(stem[prefix.end() :] if prefix else stem)
+
+
+def c_tests_for(root: Path, source: Path, tests_dir: str = "tests") -> Path:
+    """Return the test file mirroring a C ``source`` under ``root/<tests_dir>``, or that folder.
+
+    The mirror of a C repository: the source's folders in snake_case, then
+    ``test_<mirror_name(stem)>.py``. It is tried with all of the folders, then without the first
+    one (a product source root such as ``Usr/``, which the tests folder does not repeat), then as
+    :func:`default_tests_for` names it, which also gives the fallback to the whole folder.
+    ``Ext/alxIna228.c`` maps to ``<tests>/ext/test_ina228.py``, ``Mcu/McuStm32/alxAdc_McuStm32.c``
+    to ``<tests>/mcu/mcu_stm32/test_adc_mcu_stm32.py`` and ``Usr/Foo/fooMain.c`` to
+    ``<tests>/foo/test_main.py``.
+    """
+    rel = source.resolve().relative_to(root.resolve())
+    tests = root / tests_dir
+    folders = [_snake(part) for part in rel.parts[:-1]]
+    name = f"test_{mirror_name(source.stem)}.py"
+    for candidate in (tests.joinpath(*folders, name), tests.joinpath(*folders[1:], name)):
+        if candidate.exists():
+            return candidate
+    return default_tests_for(root, source, tests_dir)
+
+
 class MutationRun:
     """Plant mutants of the given sources one by one, run their tests, restore, report."""
 
@@ -354,11 +400,16 @@ class MutationRun:
         pool_id: str = "",
         sample_raw: bool = False,
         only: Iterable[str] | None = None,
+        mirror: str = "python",
     ):
         """Configure the run: repository, output folder, sampling, and the language hooks.
 
         ``generate``, ``run``, ``check``, ``fingerprint_of`` and ``rebuild`` are the seams: the
         defaults are the Python recipe, a compiled language passes its own (the C library does).
+
+        ``mirror`` picks the default ``tests_for``: ``"python"`` is :func:`default_tests_for`,
+        ``"c"`` is :func:`c_tests_for`, the PEP 8 mirror of a C repository; a ``tests_for``
+        hook replaces both.
 
         ``pool`` caches the generated and filtered mutants of a source under ``<out>/pool/`` and
         reuses them while the source is unchanged; ``pool_id`` is whatever else the filtering
@@ -389,7 +440,11 @@ class MutationRun:
         self.min_timeout_s = min_timeout_s
         self._generate = generate
         self._run = run
-        self._tests_for = tests_for or functools.partial(default_tests_for, tests_dir=tests_dir)
+        if mirror not in MIRRORS:
+            raise ValueError(f"unknown mirror {mirror!r}: expected one of {', '.join(MIRRORS)}")
+        self.mirror = mirror
+        mirror_of = c_tests_for if mirror == "c" else default_tests_for
+        self._tests_for = tests_for or functools.partial(mirror_of, tests_dir=tests_dir)
         self._check = check
         self._fingerprint = fingerprint_of
         self._rebuild = rebuild
@@ -412,17 +467,29 @@ class MutationRun:
         test writing is planned from. Measured on the device repository, where a hundred proofs of
         mmxMain.c live in two such siblings and the lane had never once run them.
 
+        Under the C mirror a candidate that is the mirror of ANOTHER source beside this one is that
+        source's test and not a continuation: ``test_lin_fun.py`` belongs to ``alxLinFun.c``, so
+        it does not run with ``test_lin.py``.
+
         A ``tests_for`` hook that returns a folder is left alone - pytest already walks it.
         """
         tests = self._tests_for(self.root, source)
         targets = [tests]
         if tests.is_file():
-            targets += sorted(p for p in tests.parent.glob(f"{tests.stem}_*.py") if p.is_file())
+            family = sorted(p for p in tests.parent.glob(f"{tests.stem}_*.py") if p.is_file())
+            targets += [p for p in family if not self._mirrors_another_source(p, source)]
         return [
             sys.executable, "-m", "pytest", "-q", "-x",
             "-p", "no:randomly", "-p", "no:cacheprovider",
             "-o", "addopts=", *[str(t) for t in targets],
         ]  # fmt: skip
+
+    def _mirrors_another_source(self, test: Path, source: Path) -> bool:
+        """Return whether ``test`` is the C mirror of another source beside ``source``."""
+        return self.mirror == "c" and any(
+            f"test_{mirror_name(other.stem)}.py" == test.name
+            for other in source.parent.glob(f"*{source.suffix}")
+        )
 
     def _pytest(self, source: Path, timeout_s: float) -> tuple[int, float]:
         """Run the tests of ``source``; return ``(returncode, seconds)``, -1 on timeout."""
@@ -775,6 +842,13 @@ def main(argv: list[str] | None = None) -> int:
         "--tests-dir", default="tests", help="tests folder under root (default tests)"
     )
     parser.add_argument(
+        "--mirror",
+        choices=MIRRORS,
+        default="python",
+        help="how a source's test is named: python = tests/<pkg>/test_<mod>.py, c = C prefix "
+        "as the folder and a PEP 8 name (alxFifo.c -> test_fifo.py)",
+    )
+    parser.add_argument(
         "--check-cmd", help="viability check of {mutant}; non-zero exit = STILLBORN"
     )
     parser.add_argument(
@@ -807,6 +881,7 @@ def main(argv: list[str] | None = None) -> int:
         sample_raw=args.sample_raw,
         seed=args.seed,
         tests_dir=args.tests_dir,
+        mirror=args.mirror,
         check=check_command(args.check_cmd, root) if args.check_cmd else None,
         fingerprint_of=(
             fingerprint_command(args.fingerprint_cmd, root)
