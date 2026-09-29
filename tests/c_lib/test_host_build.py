@@ -18,6 +18,9 @@ Proofs (ALX-1544):
   P167 build_exe drops the shared-library flag; run_exe runs in the build environment
   P168 Toolchain: locations come from the environment variables, a missing one names its variable
   P169 the build environment is vcvars' variables over the process environment, captured once
+
+Proofs (ALX-1564):
+  P305 only the listed closure sources are linked; a stale object in the folder is not
 """
 
 import json
@@ -205,6 +208,26 @@ def test_ALX1544_P165_build_dll_two_steps_compiles_the_closure_then_links_it(
     # a define that changes behaviour must hold for both steps or the DLL mixes configurations
     assert "-DASSERTS_ON" in first["argv"]
     assert "-DASSERTS_ON" in second["argv"]
+
+
+def test_ALX1564_P305_a_stale_object_in_the_closure_folder_is_not_linked(
+    tmp_path, toolchain, monkeypatch
+):
+    objs = tmp_path / "objs"
+    objs.mkdir()
+    (objs / "removed.obj").write_text("object", encoding="ascii")  # left by an earlier build
+    fake = FakeCompiler(make=["param.obj"])
+    monkeypatch.setattr(hb, "run", lambda argv, cwd=None, env=None: fake(argv, cwd=cwd, env=env))
+    hb.build_dll(
+        toolchain,
+        out=tmp_path / "cli.dll",
+        strict=[tmp_path / "cli.c"],
+        closure=[tmp_path / "param.c"],
+        obj_dir=objs,
+    )
+    link = fake.calls[1]["argv"]
+    assert str(objs / "param.obj") in link, "the listed source is linked"
+    assert str(objs / "removed.obj") not in link, "a source that left the list is not"
 
 
 def test_ALX1544_P166_a_failing_step_raises_build_error_with_the_tool_output(

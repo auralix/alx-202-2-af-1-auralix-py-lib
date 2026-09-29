@@ -385,6 +385,10 @@ def build_dll(
 
     ``defines`` reach BOTH steps: a define that changes behaviour (asserts on, as the product ships
     them) must hold for the closure too, or the DLL is built from two different configurations.
+
+    Only the objects of the listed closure sources are linked. An object left in the folder by a
+    source that has since left the list is stale, and linking it would keep a removed definition
+    alive until someone deleted the folder.
     """
     out.parent.mkdir(parents=True, exist_ok=True)
     env = toolchain.environment()
@@ -408,7 +412,7 @@ def build_dll(
             obj_dir,
             env,
         )
-        objects = [str(o) for o in sorted(obj_dir.glob(f"*{OBJECT_SUFFIX[driver]}"))]
+        objects = [str(obj_dir / f"{src.stem}{OBJECT_SUFFIX[driver]}") for src in closure]
     _step(
         f"{out.name} build",
         link_argv(
