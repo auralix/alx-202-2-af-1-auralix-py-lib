@@ -67,7 +67,8 @@ def build(session: nox.Session) -> None:
         "-c",
         "import alx, alx.debug_probe, alx.debug_probe.jlink, alx.psu.owon_p4603, alx.c_lib.cli, "
         "alx.c_lib.trace, alx.fw.live_watch, alx.serial_logger, alx.verify, alx.verify.evidence, "
-        "alx.verify.lanes, alx.verify.ascii_gate, alx.verify.c_style, "
+        "alx.verify.lanes, alx.verify.ascii_gate, alx.verify.c_style, alx.verify.fake_style, "
+        "alx.verify.results, "
         "alx.c_lib.host_build, alx.c_lib.mutation_hooks, "
         "alx.verify.coverage_gate, alx.verify.mutation; print('installed alx', alx.__version__)",
         external=True,

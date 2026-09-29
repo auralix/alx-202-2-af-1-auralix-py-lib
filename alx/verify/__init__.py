@@ -12,7 +12,12 @@ library's own modules: paths, thresholds and commands come from the caller (the 
 * ``ascii_gate``: every text file is pure ASCII.
 * ``c_style``: the two mechanical C rules a compiler cannot state - no ternary operator, and the
   doxygen tag lines of a block aligned on tabs (for the C repositories' ANALYZE stage).
+* ``fake_style``: the convention every link-time fake of a C library module follows - named after
+  its module, no consumer code, typed handles, a reset for its state, the header's own family guard.
 * ``coverage_gate``: every file of a coverage report (cobertura, llvm-cov, coverage.py) reaches the
   minimum in every gated metric.
 * ``mutation``: plant each mutant of a source, run its tests, classify, report the survivors.
+* ``results``: read pytest JUnit evidence without counting expected failures as passes, and write
+  the functionality matrix of a target run.
+* ``public_gate``: no private vocabulary in the files and commit messages of a public repository.
 """
