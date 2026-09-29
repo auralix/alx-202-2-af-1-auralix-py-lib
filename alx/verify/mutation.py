@@ -458,14 +458,14 @@ class MutationRun:
     def test_command(self, source: Path) -> list[str]:
         """Return the pytest command for one source: its mirror test file plus that file's FAMILY.
 
-        A module's proofs outgrow one file. When the mirror is ``test_mmxMain.py`` the siblings
-        named ``test_mmxMain_<subject>.py`` are its continuation and are run with it - they test the
+        A module's proofs outgrow one file. When the mirror is ``test_foo.py`` the siblings
+        named ``test_foo_<subject>.py`` are its continuation and are run with it - they test the
         same translation unit and were usually written to kill mutants in it.
 
         Running only the mirror is not a smaller measurement, it is a WRONG one: a mutant those
         siblings kill is reported as a survivor, and a survivor list is the thing the next round of
-        test writing is planned from. Measured on the device repository, where a hundred proofs of
-        mmxMain.c live in two such siblings and the lane had never once run them.
+        test writing is planned from. Measured on a consumer repository, where a hundred proofs of
+        one firmware source lived in two such siblings and the lane had never once run them.
 
         Under the C mirror a candidate that is the mirror of ANOTHER source beside this one is that
         source's test and not a continuation: ``test_lin_fun.py`` belongs to ``alxLinFun.c``, so

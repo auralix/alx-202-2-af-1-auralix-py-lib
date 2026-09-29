@@ -750,7 +750,7 @@ def test_ALX1553_P104_sample_raw_draws_before_the_filter_and_keeps_no_pool(tmp_p
     """A run over a large translation unit is bounded by the sample, not by the source's size.
 
     The filter compiles every mutant twice, to check it and to fingerprint it, and on a firmware
-    source of several thousand lines that is the entire cost: the device repository's mmxMain.c
+    source of several thousand lines that is the entire cost: a consumer's main firmware source
     generates mutants by the thousand, and filtering all of them to then test six is days of
     compiling. Drawing the sample first makes the run cost what the sample says it costs.
 
@@ -838,9 +838,9 @@ def test_ALX1553_P700_a_comment_banner_does_not_swallow_the_file_it_heads(tmp_pa
 def test_ALX1544_P214_the_mirror_file_brings_its_whole_family(tmp_path):
     """A module's proofs outgrow one file, and the lane has to run all of them.
 
-    This is not a nicety. The device repository keeps a hundred proofs of one translation unit in
-    test_mmxMain_can_id0.py and test_mmxMain_can_payload.py, and the lane ran only
-    test_mmxMain.py - so every mutant those proofs kill was reported as a SURVIVOR, and the
+    This is not a nicety. A consumer repository keeps a hundred proofs of one translation unit in
+    test_foo_can_id0.py and test_foo_can_payload.py, and the lane ran only
+    test_foo.py - so every mutant those proofs kill was reported as a SURVIVOR, and the
     survivor list is exactly what the next round of test writing is planned from. A wrong
     measurement, not a smaller one.
     """
