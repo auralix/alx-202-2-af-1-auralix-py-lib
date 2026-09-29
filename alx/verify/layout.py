@@ -13,8 +13,9 @@ root of a Python repository, ``Test/`` of a C one - and this module states it as
   Python repository one folder per sub-package of the import package it mirrors. Both may add
   ``framework/`` for the checks of the verification system itself and ``integration/``.
 - Every Python file in ``tests/`` is ``test_<snake_case>.py``, ``__init__.py`` or
-  ``conftest.py``, and every folder of it is a package. Test data is in ``data/``, not in
-  ``tests/``.
+  ``conftest.py``, and every folder of it is a package - except a ``data/`` folder. Test data
+  sits in ``data/`` beside the tests that use it, at any depth of ``tests/``; a data folder is
+  no package and holds files of any kind.
 
 Only what Git tracks is checked: build outputs, caches and virtual environments are not the
 repository's, so they are never a finding. Usage::
@@ -37,12 +38,13 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
 
 REQUIRED = ("noxfile.py", "pyproject.toml", "uv.lock")
-ROOT_DIRS = frozenset({"tests", "harness", "host", "target", "config", "data", "build"})
+ROOT_DIRS = frozenset({"tests", "harness", "host", "target", "config", "build"})
 HOST_ROLES = frozenset({"helpers", "fakes", "checks"})
 TARGET_ROLES = frozenset({"helpers", "checks"})
 TESTS_DIRS = {"c": frozenset({"host", "target"}), "python": frozenset()}
 TESTS_COMMON = frozenset({"framework", "integration"})
 TESTS_FILES = frozenset({"__init__.py", "conftest.py"})
+DATA_DIR = "data"  # test data, beside the tests that use it
 
 _TEST_MODULE = re.compile(r"^test_[a-z0-9]+(?:_[a-z0-9]+)*\.py$")
 
@@ -92,7 +94,9 @@ def check_paths(paths: Iterable[str], kind: str, packages: Iterable[str] = ()) -
             findings.append(f"{f}: target/ holds only {', '.join(sorted(TARGET_ROLES))}/")
         elif top == "tests":
             findings += _test_file(f, allowed_tests)
-            test_dirs.update(p for p in f.parents if p.parts and p.parts[0] == "tests")
+            test_dirs.update(
+                p for p in f.parents if p.parts[:1] == ("tests",) and DATA_DIR not in p.parts
+            )
     for folder in sorted(test_dirs):
         if folder / "__init__.py" not in files:
             findings.append(f"{folder}/: not a package (no __init__.py)")
@@ -101,10 +105,12 @@ def check_paths(paths: Iterable[str], kind: str, packages: Iterable[str] = ()) -
 
 def _test_file(f: PurePosixPath, allowed: frozenset[str] | set[str]) -> list[str]:
     """Return the findings for one file under ``tests/``."""
-    if len(f.parts) > 2 and f.parts[1] not in allowed:
+    if len(f.parts) > 2 and f.parts[1] not in allowed and f.parts[1] != DATA_DIR:
         return [f"{f}: tests/{f.parts[1]}/ is not a folder of the template"]
+    if DATA_DIR in f.parts[1:-1]:
+        return []
     if f.suffix != ".py":
-        return [f"{f}: test data belongs in data/"]
+        return [f"{f}: test data belongs in a data/ folder beside its tests"]
     if f.name not in TESTS_FILES and not _TEST_MODULE.match(f.name):
         return [f"{f}: a test module is test_<snake_case>.py"]
     return []
