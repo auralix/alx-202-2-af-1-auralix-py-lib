@@ -4,6 +4,8 @@
 Proofs (ALX-1544):
   P61 the collection hook mirrors the proof token of the test NAME and every req marker into user_properties
   P62 git_head gives the short HEAD of a repo and "?" outside one
+  P342 git_head marks a tree whose tracked files differ from HEAD with -dirty; an untracked file
+       does not count, a staged change does (ALX-1564)
   P63 run_dir honours ALX_HIL_RUN_DIR, else builds <test_dir>/build/runs/<12-digit timestamp>
   P64 loaded through pytest_plugins (this suite's conftest), the hook tags THIS test with its proof token
   P148 pytest-randomly's seed is recorded as the junit testsuite property randomly_seed; without the plugin
@@ -11,6 +13,7 @@ Proofs (ALX-1544):
 """
 
 import re
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -54,8 +57,42 @@ def test_ALX1544_P61_hook_mirrors_proof_token_and_req_markers():
 
 def test_ALX1544_P62_git_head_of_a_repo_and_outside_one(tmp_path):
     head = git_head(Path(evidence.__file__).parent)
-    assert re.fullmatch(r"[0-9a-f]{7,}", head), head
+    assert re.fullmatch(r"[0-9a-f]{7,}(-dirty)?", head), head
     assert git_head(tmp_path) == "?"
+
+
+IDENTITY = ("-c", "user.name=test", "-c", "user.email=test@example.invalid")
+
+
+def _git(repo, *args):
+    subprocess.run(  # noqa: S603 - fixed argv, no shell; builds a throwaway repository
+        ["git", "-C", str(repo), *IDENTITY, *args],  # noqa: S607 - the developer's own git, as in the module
+        capture_output=True,
+        check=True,
+    )
+
+
+def test_ALX1564_P342_git_head_marks_a_tree_whose_tracked_files_differ_from_head(
+    tmp_path, monkeypatch
+):
+    # the developer's own git configuration (signing, hooks, line endings) stays out of the repository
+    (tmp_path / "gitconfig").write_bytes(b"")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "gitconfig"))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    (repo / "a.txt").write_bytes(b"1\n")
+    _git(repo, "add", "a.txt")
+    _git(repo, "commit", "-q", "-m", "first")
+    clean = git_head(repo)
+    assert re.fullmatch(r"[0-9a-f]{7,}", clean), clean
+    (repo / "b.txt").write_bytes(b"new\n")
+    assert git_head(repo) == clean, "an untracked file is not a change to what HEAD names"
+    (repo / "a.txt").write_bytes(b"2\n")
+    assert git_head(repo) == f"{clean}-dirty", "a modified tracked file marks the head"
+    _git(repo, "add", "a.txt")
+    assert git_head(repo) == f"{clean}-dirty", "so does a staged one"
 
 
 def test_ALX1544_P63_run_dir_from_the_launcher_or_a_timestamp(tmp_path, monkeypatch):

@@ -7,7 +7,8 @@
   xunit1``)
 * ``run_dir``: the per-run evidence directory (``ALX_HIL_RUN_DIR`` from the launcher, else a
   timestamp)
-* ``git_head``: short HEAD of a repo (device repo, submodules) for the run's identity record
+* ``git_head``: short HEAD of a repo (device repo, submodules) for the run's identity record,
+  ``-dirty`` appended when its tracked files differ from HEAD
 * random order on record: when pytest-randomly is active, its seed lands in the junit XML as the
   testsuite property ``randomly_seed`` (the seed policy: random every run, never fixed, always
   recorded; reproduce with ``--randomly-seed=<n>``)
@@ -68,19 +69,35 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
 
 
 def git_head(path: str | Path) -> str:
-    """Return the short HEAD of the repo at ``path``, ``"?"`` when not a repo or git is missing."""
+    """Return the short HEAD of the repo at ``path``, ``"?"`` when not a repo or git is missing.
+
+    ``-dirty`` is appended when tracked files differ from HEAD, staged or not; untracked files do
+    not count. That is the mark ``git describe --dirty`` gives, so a run of a modified tree is never
+    recorded as the commit it started from.
+    """
     try:
-        result = subprocess.run(  # noqa: S603 - fixed argv, no shell; a read-only git query
-            # S607 waived on the next line: the git on PATH is the developer's own, and the wrong
-            # one can only misreport a hash - this query writes nothing and decides nothing.
-            ["git", "-C", str(path), "rev-parse", "--short", "HEAD"],  # noqa: S607
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        return result.stdout.strip()
+        head = _git(path, "rev-parse", "--short", "HEAD")
+        changes = _git(path, "status", "--porcelain", "--untracked-files=no")
     except (OSError, subprocess.CalledProcessError):  # git missing, or not a repository
         return "?"
+    return f"{head}-dirty" if changes else head
+
+
+def _git(path: str | Path, *args: str) -> str:
+    """Run one read-only git query in ``path`` and return its output, stripped.
+
+    ``--no-optional-locks``: status would otherwise write its index refresh back, and a query that
+    records a run must not change the tree it records.
+    """
+    result = subprocess.run(  # noqa: S603 - fixed argv, no shell; a read-only git query
+        # S607 waived on the next line: the git on PATH is the developer's own, and the wrong
+        # one can only misreport a hash - this query writes nothing and decides nothing.
+        ["git", "--no-optional-locks", "-C", str(path), *args],  # noqa: S607
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout.strip()
 
 
 def run_dir(test_dir: str | Path, env_var: str = "ALX_HIL_RUN_DIR") -> Path:
