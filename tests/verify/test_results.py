@@ -1,9 +1,27 @@
 # SPDX-License-Identifier: MIT
-"""Evidence interpretation: a passing process is not an all-passing test inventory."""
+"""Evidence interpretation: a passing process is not an all-passing test inventory.
+
+P117, P118 and P127 prove the functionality report; they moved here with their proof tokens from
+the first consumer's framework suite, which keeps only its own map and command line.
+"""
+
+import json
 
 import pytest
 
-from alx.verify.results import read_cases
+from alx.verify.results import read_cases, write_functionality_report
+
+FUNCTIONALITIES = {"test_cli": "CLI commands", "test_boot": "Boot and identity"}
+
+
+def _run(tmp_path, *reports):
+    """A run folder with one pytest report per (mode, testcases) pair."""
+    for mode, cases in reports:
+        (tmp_path / mode).mkdir()
+        (tmp_path / mode / "pytest_report.xml").write_text(
+            f"<testsuite>{cases}</testsuite>", encoding="utf-8"
+        )
+    return tmp_path
 
 
 @pytest.mark.parametrize(
@@ -80,3 +98,51 @@ def test_ALX1564_P204_multiple_phase_diagnostics_remain_visible(
     (case,) = read_cases(report)
     assert case.outcome == outcome
     assert case.reason.splitlines() == reasons
+
+
+def test_ALX1564_P117_matrix_keeps_expected_failures_out_of_pass_counts(tmp_path):
+    run = _run(
+        tmp_path,
+        (
+            "api",
+            '<testcase name="works" classname="tests.target.test_cli"/>'
+            '<testcase name="defect" classname="tests.target.test_cli">'
+            '<skipped type="pytest.xfail" message="known"/></testcase>',
+        ),
+    )
+    assert write_functionality_report(run, ["api"], FUNCTIONALITIES, notes=["A caveat."])
+    rows = json.loads((run / "functionality.json").read_text(encoding="utf-8"))
+    assert [row["outcome"] for row in rows] == ["passed", "xfail"]
+    assert {row["mode"] for row in rows} == {"api"}
+    assert {row["execution_location"] for row in rows} == {"target"}
+    markdown = (run / "functionality.md").read_text(encoding="utf-8")
+    assert "| api | CLI commands | 1 | 1 | 0 | 0 | 0 |" in markdown
+    assert "Boot and identity" not in markdown, "a functionality with no case has no row"
+    assert "A caveat." in markdown, "the repository's own notes are kept"
+
+
+def test_ALX1564_P118_matrix_refuses_mixed_host_results(tmp_path):
+    run = _run(tmp_path, ("api", '<testcase name="check" classname="tests.host.app.test_main"/>'))
+    with pytest.raises(ValueError, match="mixed host input"):
+        write_functionality_report(run, ["api"], FUNCTIONALITIES)
+
+
+def test_ALX1564_P127_matrix_preserves_all_diagnostics_within_one_record(tmp_path):
+    run = _run(
+        tmp_path,
+        (
+            "api",
+            '<testcase name="defect" classname="tests.target.test_cli">'
+            '<skipped type="pytest.xfail" message="known body defect"/>'
+            '<error message="unexpected | cleanup failure"/></testcase>',
+        ),
+        ("cli", '<testcase name="works" classname="test_boot"/>'),
+    )
+    assert not write_functionality_report(run, ["api", "cli"], FUNCTIONALITIES)
+    first, second = json.loads((run / "functionality.json").read_text(encoding="utf-8"))
+    assert first["outcome"] == "error"
+    assert first["reason"] == "unexpected | cleanup failure\nknown body defect"
+    assert second["functionality"] == "Boot and identity", "a module without the package prefix"
+    markdown = (run / "functionality.md").read_text(encoding="utf-8")
+    assert "unexpected / cleanup failure known body defect" in markdown, "one table cell"
+    assert "| api | CLI commands | 0 | 0 | 0 | 0 | 1 |" in markdown
