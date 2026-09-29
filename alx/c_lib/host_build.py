@@ -11,10 +11,12 @@ which sources, which defines, which ``.def`` file. This module holds the mechani
     from alx.c_lib import host_build as hb
 
     tc = hb.Toolchain()
+    EXPORTS = hb.Exports("alxFifoTest", ("AlxFifo_Read", "AlxFifo_Write"))
     if hb.needs_build(dll, deps):
         hb.build_dll(tc, out=dll, strict=STRICT, closure=CLOSURE, includes=INC,
-                     defines=ASSERTS, def_file=DEF, flags=["-O0", "-g"],
-                     warnings=[*hb.WARNINGS, "-Werror"], obj_dir=build / "closure")
+                     defines=ASSERTS, def_file=hb.write_def_file(build, EXPORTS),
+                     flags=["-O0", "-g"], warnings=[*hb.WARNINGS, "-Werror"],
+                     obj_dir=build / "closure")
 
 Two compile drivers, because both are in use: :data:`GNU` is clang with GNU-style flags (what a
 conftest builds the dev DLL with) and :data:`MSVC` is clang-cl with MSVC-style flags (what the
@@ -34,7 +36,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from alx.verify.lanes import tool
 
@@ -75,6 +77,35 @@ PROFILE: tuple[str, ...] = ("-fprofile-instr-generate", "-fcoverage-mapping")
 
 CRT_DEFINE = "-D_CRT_SECURE_NO_WARNINGS"
 """The MSVC CRT deprecation noise, off in every host build: the target has no MSVC CRT."""
+
+
+class Exports(NamedTuple):
+    """One DLL's export list: the symbols Python may call through ctypes.
+
+    A repository declares it as Python data beside the sources it belongs to; the linker's
+    module-definition (``.def``) file is a build output that :func:`write_def_file` writes from it.
+    One entry per line of the ``.def``'s EXPORTS section: a symbol name, or ``<name> DATA`` for a
+    variable.
+    """
+
+    library: str
+    symbols: tuple[str, ...]
+
+
+def write_def_file(build_dir: Path, exports: Exports) -> Path:
+    """Write ``<build_dir>/<library>.def`` from an export list and return its path.
+
+    Rewritten only when its text changes, so a DLL that depends on it is not rebuilt for nothing.
+    It is not a rebuild dependency of its own: the list lives in the repository's build module,
+    and that module is a dependency of every DLL built from it.
+    """
+    path = build_dir / f"{exports.library}.def"
+    lines = [f"LIBRARY {exports.library}\n", "EXPORTS\n", *(f"\t{s}\n" for s in exports.symbols)]
+    text = "".join(lines)
+    if not path.is_file() or path.read_text(encoding="ascii") != text:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="ascii", newline="\n")
+    return path
 
 
 class BuildError(RuntimeError):

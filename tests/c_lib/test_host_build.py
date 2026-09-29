@@ -21,6 +21,8 @@ Proofs (ALX-1544):
 
 Proofs (ALX-1564):
   P305 only the listed closure sources are linked; a stale object in the folder is not
+  P319 an export list becomes a .def file: the library line, then one tab-indented line each
+  P320 the .def file is rewritten only when its text changes, and its folder is made if missing
 """
 
 import json
@@ -228,6 +230,28 @@ def test_ALX1564_P305_a_stale_object_in_the_closure_folder_is_not_linked(
     link = fake.calls[1]["argv"]
     assert str(objs / "param.obj") in link, "the listed source is linked"
     assert str(objs / "removed.obj") not in link, "a source that left the list is not"
+
+
+def test_ALX1564_P319_an_export_list_becomes_a_def_file(tmp_path):
+    exports = hb.Exports("alxFifoTest", ("AlxFifo_Read", "AlxFifo_Write", "alxTick DATA"))
+    path = hb.write_def_file(tmp_path, exports)
+    assert path == tmp_path / "alxFifoTest.def"
+    assert path.read_bytes() == (
+        b"LIBRARY alxFifoTest\nEXPORTS\n\tAlxFifo_Read\n\tAlxFifo_Write\n\talxTick DATA\n"
+    ), "ASCII, LF, one tab-indented entry per symbol, a variable marked DATA as declared"
+
+
+def test_ALX1564_P320_the_def_file_is_rewritten_only_when_its_text_changes(tmp_path):
+    build = tmp_path / "build"
+    exports = hb.Exports("cli", ("AlxCli_Handle",))
+    path = hb.write_def_file(build, exports)
+    assert path.is_file(), "the build folder is made when it is missing"
+    os.utime(path, (0, 0))
+    hb.write_def_file(build, exports)
+    assert path.stat().st_mtime == 0, "the same list does not touch the file"
+    hb.write_def_file(build, hb.Exports("cli", ("AlxCli_Handle", "AlxCli_Init")))
+    assert path.stat().st_mtime != 0
+    assert path.read_text(encoding="ascii").endswith("\tAlxCli_Init\n")
 
 
 def test_ALX1544_P166_a_failing_step_raises_build_error_with_the_tool_output(
