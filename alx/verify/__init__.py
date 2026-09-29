@@ -20,4 +20,6 @@ library's own modules: paths, thresholds and commands come from the caller (the 
 * ``results``: read pytest JUnit evidence without counting expected failures as passes, and write
   the functionality matrix of a target run.
 * ``public_gate``: no private vocabulary in the files and commit messages of a public repository.
+* ``layout``: a verification root holds the template's entries, and every tracked file has its
+  place - the verification template as data, checked by every repository on itself.
 """
