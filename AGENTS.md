@@ -19,4 +19,4 @@
 ---
 
 # Rules for This Repository
-- No additional rules
+- This repository is public, so follow the Auralix Global Rules for public repositories
