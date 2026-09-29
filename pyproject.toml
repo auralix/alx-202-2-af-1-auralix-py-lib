@@ -54,7 +54,6 @@ packages = ["alx", "alx.debug_probe", "alx.psu", "alx.can", "alx.c_lib", "alx.fw
 [tool.pytest.ini_options]
 minversion = "8.0"
 testpaths = ["tests"]
-pythonpath = ["."]
 timeout = 60
 xfail_strict = true
 addopts = "-ra --strict-markers --strict-config --junitxml=build/pytest_report.xml --html=build/pytest_report.html --self-contained-html"
