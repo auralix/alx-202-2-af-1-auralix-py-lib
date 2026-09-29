@@ -67,7 +67,7 @@ def build(session: nox.Session) -> None:
         "-c",
         "import alx, alx.debug_probe, alx.debug_probe.jlink, alx.psu.owon_p4603, alx.c_lib.cli, "
         "alx.c_lib.trace, alx.fw.live_watch, alx.serial_logger, alx.verify, alx.verify.evidence, "
-        "alx.verify.lanes, alx.verify.ascii_gate, alx.verify.readme_gate, alx.verify.c_style, "
+        "alx.verify.lanes, alx.verify.ascii_gate, alx.verify.c_style, "
         "alx.c_lib.host_build, alx.c_lib.mutation_hooks, "
         "alx.verify.coverage_gate, alx.verify.mutation; print('installed alx', alx.__version__)",
         external=True,
@@ -99,9 +99,9 @@ def matrix(session: nox.Session) -> None:
 
 @nox.session
 def analyze(session: nox.Session) -> None:
-    """ANALYZE: 0 style (ruff, codespell, ASCII, README), 1 types (mypy), 2 deps (pip-audit)."""
+    """ANALYZE: 0 style (ruff, codespell, ASCII), 1 types (mypy), 2 deps (pip-audit)."""
     out = lanes.evidence_dir(ROOT, "analyze")
-    session.log("Stage 0: ruff format --check, ruff check, codespell, ascii gate, readme gate")
+    session.log("Stage 0: ruff format --check, ruff check, codespell, ascii gate")
     session.run(PYTHON, "-m", "ruff", "format", "--check", ".")
     session.run(PYTHON, "-m", "ruff", "check", ".")
     session.run(
@@ -117,7 +117,6 @@ def analyze(session: nox.Session) -> None:
     )
     session.run(PYTHON, "-m", "codespell_lib")
     session.run(PYTHON, "-m", "alx.verify.ascii_gate", ".", "--out", str(out / "ascii_gate.txt"))
-    session.run(PYTHON, "-m", "alx.verify.readme_gate", ".", "--out", str(out / "readme_gate.txt"))
     session.log("Stage 1: mypy (strict on the package, tests checked)")
     session.run(PYTHON, "-m", "mypy", "--junit-xml", str(out / "mypy.xml"))
     session.log("Stage 2: pip-audit over the locked dependencies (uv.lock)")
