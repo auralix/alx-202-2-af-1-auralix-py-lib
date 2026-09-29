@@ -17,10 +17,11 @@ names it on the command line::
 
     python -m alx.c_lib.mutation_hooks check <file> -I <dir> -D <macro> [--std gnu99]
     python -m alx.c_lib.mutation_hooks fingerprint <file> --work <dir> -I <dir> -D <macro>
-    python -m alx.c_lib.mutation_hooks rebuild --groups conftest:DLL_GROUPS --sys-path Test
+    python -m alx.c_lib.mutation_hooks rebuild --groups harness.build:DLL_GROUPS
 
-so a consumer's MUTATE lane needs no file of its own. Exit code 0 = yes / done, 1 = no / failed;
-``fingerprint`` prints the hash on stdout, which is what the driver compares.
+so a consumer's MUTATE lane needs no file of its own; ``--sys-path <dir>`` puts a folder first
+on the import path, for a groups module that is not installed. Exit code 0 = yes / done,
+1 = no / failed; ``fingerprint`` prints the hash on stdout, which is what the driver compares.
 
 Compiling here is always clang with GNU-style flags: these two hooks ask about the SOURCE, never
 about the shipped binary, so the driver of the real build does not matter and one form keeps the
@@ -144,8 +145,9 @@ Group = tuple[Path, "Iterable[Path]", "Callable[[], None]"]
 def load_groups(spec: str, sys_path: Iterable[Path | str] = ()) -> list[Group]:
     """Import ``module:attribute`` and return the ``(target, dependencies, build)`` list it holds.
 
-    The consumer declares its groups where its source lists already live (a conftest), so the lane
-    has no script of its own. ``sys_path`` entries are prepended so that module can be found.
+    The consumer declares its groups where its source lists already live (its harness package), so
+    the lane has no script of its own. ``sys_path`` entries are prepended, for a module that is not
+    installed.
     """
     module_name, _, attribute = spec.partition(":")
     if not module_name or not attribute:
