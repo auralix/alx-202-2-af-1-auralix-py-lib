@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""Verification lanes of the Auralix Python Library; the process is described in tests/README.md.
+"""Auralix Python Library verification lanes (wiki: Python Library Verification System Stack).
 
 Run inside the repository's uv environment (``uv sync --locked --extra dev`` once)::
 

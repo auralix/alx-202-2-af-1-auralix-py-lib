@@ -4,7 +4,7 @@
 # a device repo points uv at its submodule as an editable path source ([tool.uv.sources]).
 # Environment:                                uv sync --locked --extra dev
 # Offline tests (no instrument, no target):  python -m pytest
-# Verification lanes (tests/README.md):       uv run nox -l
+# Verification lanes:                        uv run nox -l
 [build-system]
 requires = ["setuptools>=77"]                # >= 77: PEP 639 license expression + license-files
 build-backend = "setuptools.build_meta"
