@@ -1,28 +1,23 @@
 # SPDX-License-Identifier: MIT
 """Shared pieces of the verification pipeline, for any repository (py-lib, C library, device repo).
 
-The gates are commands (``python -m alx.verify.<gate> ...``) and functions; every gate prints its
-verdict, writes it to ``--out`` when asked, and exits 0 = PASS / 1 = FAIL. Nothing here knows the
-library's own modules: paths, thresholds and commands come from the caller (the lane runner).
+Nothing here knows the library's own modules: paths, thresholds and commands come from the caller
+(the lane runner).
 
 * ``lanes``: the lane vocabulary of every repository's ``noxfile.py`` - stage names = session names,
   evidence under ``build/<stage>/``, pytest report options, tool locations from the environment.
 * ``evidence``: the pytest plugin every suite loads - proof tokens and ``req`` markers into junit
-  properties, the per-run folder, repository heads (this one runs inside the test process).
-* ``ascii_gate``: every text file is pure ASCII.
-* ``c_style``: the two mechanical C rules a compiler cannot state - no ternary operator, and the
-  doxygen tag lines of a block aligned on tabs (for the C repositories' ANALYZE stage).
-* ``fake_style``: the convention every link-time fake of a C library module follows - named after
-  its module, no consumer code, typed handles, a reset for its state, the header's own family guard.
-* ``coverage_gate``: every file of a coverage report (cobertura, llvm-cov, coverage.py) reaches the
-  minimum in every gated metric.
-* ``mutation``: plant each mutant of a source, run its tests, classify, report the survivors.
+  properties, the per-run folder, repository heads with their dirty mark, a run's evidence copied
+  into a release (this one runs inside the test process).
 * ``results``: read pytest JUnit evidence without counting expected failures as passes, and write
   the functionality matrix of a target run.
-* ``public_gate``: no private vocabulary in the files and commit messages of a public repository.
-* ``layout``: a verification root holds the template's entries, and every tracked file has its
-  place - the verification template as data, checked by every repository on itself.
-* ``data_source``: every test data file identifies itself - what it is, what produced it, from
-  which firmware, build and source tree, when - in a ``source`` record inside the file; also the
-  reader and writer of such files.
+* ``host_build``: the host build that turns C sources into the DLL a pytest suite drives through
+  ctypes (toolchain, rebuild check, compile database, the one-step and two-step recipes, the
+  sanitizer and coverage variants). Every C repository with host tests needs it, none owns it.
+* ``mutation``: plant each mutant of a source, run its tests, classify, report the survivors;
+  ``mutation_hooks``: what the lane must ask a compiler when the mutated language is C - is the
+  mutant valid C, is its object code the same, rebuild the binaries under test.
+* ``gates``: the gates, each a command (``python -m alx.verify.gates.<gate> ...``) with a PASS/FAIL
+  verdict, ``--out`` and exit code 0 = PASS / 1 = FAIL, and a function: ``ascii``, ``c_style``,
+  ``coverage``, ``data_source``, ``fake_style``, ``layout``, ``public``.
 """

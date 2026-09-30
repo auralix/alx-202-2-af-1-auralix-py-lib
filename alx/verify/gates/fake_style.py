@@ -23,7 +23,7 @@ exists: a blanket ``defined(ALX_STM32)`` breaks every family the header does not
 
 Checked by scanning, like the C style gate: no compiler, no include path. Usage::
 
-    python -m alx.verify.fake_style <fake.c> [...] [--headers <dir> ...] [--out report.txt]
+    python -m alx.verify.gates.fake_style <fake.c> [...] [--headers <dir> ...] [--out report.txt]
 
 Exit code 0 = PASS, 1 = FAIL. Every finding is one ``<file>:<line>: <what>`` line.
 """
@@ -136,7 +136,9 @@ def check(files: Iterable[str | Path], header_dirs: Iterable[Path] | None = None
 
 def main(argv: list[str] | None = None) -> int:
     """Command line entry; see the module docstring."""
-    parser = argparse.ArgumentParser(prog="python -m alx.verify.fake_style", description=__doc__)
+    parser = argparse.ArgumentParser(
+        prog="python -m alx.verify.gates.fake_style", description=__doc__
+    )
     parser.add_argument("files", nargs="+", help="the fakes to check")
     parser.add_argument("--headers", nargs="+", type=Path, help="where the module headers are")
     parser.add_argument("--out", help="also write the report to this file")

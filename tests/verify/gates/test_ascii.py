@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""alx.verify.ascii_gate - the pure-ASCII gate over a scratch tree.
+"""alx.verify.gates.ascii - the pure-ASCII gate over a scratch tree.
 
 Proofs (ALX-1544):
   P100 text files are selected by suffix or by name; tool and build folders are skipped
@@ -10,7 +10,7 @@ Proofs (ALX-1544):
 
 from pathlib import Path
 
-from alx.verify import ascii_gate
+from alx.verify.gates import ascii as ascii_gate
 
 
 def tree(root: Path) -> None:

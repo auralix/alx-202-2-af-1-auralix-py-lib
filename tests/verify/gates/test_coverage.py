@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""alx.verify.coverage_gate - the per-file lines-and-branches gate over cobertura XML or coverage.py JSON.
+"""alx.verify.gates.coverage - the per-file lines-and-branches gate over cobertura XML or coverage.py JSON.
 
 Proofs (ALX-1544):
   P103 lines and branches are gated separately: full lines with a missed branch fails
@@ -17,8 +17,8 @@ import json
 
 import pytest
 
-from alx.verify import coverage_gate
-from alx.verify.coverage_gate import FileCoverage
+from alx.verify.gates import coverage as coverage_gate
+from alx.verify.gates.coverage import FileCoverage
 
 
 def summary(statements, covered_lines, branches, covered_branches, partial=0, missing=()):

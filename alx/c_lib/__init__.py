@@ -5,12 +5,6 @@
 port. ``alx.c_lib.trace``: parsers for the trace output (boot banner, ``[LEVEL]`` lines). Further
 protocols the C library defines (bus application layers, ...) belong here as well.
 
-``alx.c_lib.host_build``: the other side of the same relationship - the host build that turns C
-sources into the DLL a pytest suite drives through ctypes (toolchain, rebuild check, compile
-database, the one-step and two-step recipes, the sanitizer and coverage variants). Every C
-repository with host tests needs it, and none of it is specific to one.
-
-``alx.c_lib.mutation_hooks``: what ``alx.verify.mutation`` must ask a compiler when the mutated
-language is C - is the mutant valid C, is its object code the same as the original's, and rebuild
-the binaries under test. A C repository names its own build groups and needs no script of its own.
+The host build of C sources and the C hooks of the mutation lane are verification mechanisms, not
+protocols, and live in ``alx.verify`` (``host_build``, ``mutation_hooks``).
 """

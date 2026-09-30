@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""alx.c_lib.host_build: the host DLL build of a C repository, over a scripted compiler.
+"""alx.verify.host_build: the host DLL build of a C repository, over a scripted compiler.
 
 No compiler runs here. The argv builders are pure functions, so what a lane WILL run is asserted
 directly; the steps that spawn something use a scripted ``subprocess.run`` that records the argv
@@ -32,7 +32,7 @@ from typing import Any
 
 import pytest
 
-from alx.c_lib import host_build as hb
+from alx.verify import host_build as hb
 
 SRC = ["a.c", "b.c"]
 INC = ["/inc/one", "/inc/two"]

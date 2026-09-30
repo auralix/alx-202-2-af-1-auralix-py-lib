@@ -13,7 +13,7 @@ only; ``@param`` and ``@retval`` carry a name and then a description.
 
 Both rules are checked by scanning, not by parsing: no compiler, no include path, no build. Usage::
 
-    python -m alx.verify.c_style <file> [<file> ...] [--out report.txt]
+    python -m alx.verify.gates.c_style <file> [<file> ...] [--out report.txt]
 
 Exit code 0 = PASS, 1 = FAIL. Every finding is one ``<file>:<line>: <what>`` line.
 """
@@ -180,7 +180,7 @@ def check(files: Iterable[str | Path]) -> list[str]:
 
 def main(argv: list[str] | None = None) -> int:
     """Command line entry; see the module docstring."""
-    parser = argparse.ArgumentParser(prog="python -m alx.verify.c_style", description=__doc__)
+    parser = argparse.ArgumentParser(prog="python -m alx.verify.gates.c_style", description=__doc__)
     parser.add_argument("files", nargs="+", help="the C sources and headers to check")
     parser.add_argument("--out", help="also write the report to this file")
     args = parser.parse_args(argv)

@@ -8,7 +8,7 @@ closure with warnings off and the gated sources with the full warning set, link 
 list, and do it again with the sanitizer or coverage flags. Only the lists differ per repository:
 which sources, which defines, which ``.def`` file. This module holds the mechanics.
 
-    from alx.c_lib import host_build as hb
+    from alx.verify import host_build as hb
 
     tc = hb.Toolchain()
     EXPORTS = hb.Exports("alxFifoTest", ("AlxFifo_Read", "AlxFifo_Write"))

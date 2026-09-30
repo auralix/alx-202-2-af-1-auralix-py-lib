@@ -5,7 +5,7 @@ Sources, tests, configuration and documentation stay plain ASCII so every tool, 
 shows them alike; non-ASCII content belongs in data files, never in code. Tool and build folders
 are skipped; vendor folders are excluded by the caller. Usage::
 
-    python -m alx.verify.ascii_gate <root> [--exclude <name-or-relative-path>]... [--out report.txt]
+    python -m alx.verify.gates.ascii <root> [--exclude <name-or-path>]... [--out report.txt]
 
 An exclude matches a folder name anywhere in the tree (``Ext``) or a path relative to the root
 (``Test/gen``). Exit code 0 = PASS, 1 = FAIL; the first offending byte of each file is reported.
@@ -85,7 +85,7 @@ def check(files: Iterable[Path]) -> list[str]:
 
 def main(argv: list[str] | None = None) -> int:
     """Command line entry; see the module docstring."""
-    parser = argparse.ArgumentParser(prog="python -m alx.verify.ascii_gate", description=__doc__)
+    parser = argparse.ArgumentParser(prog="python -m alx.verify.gates.ascii", description=__doc__)
     parser.add_argument("root", help="folder to scan (recursively)")
     parser.add_argument(
         "--exclude",

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""alx.verify.public_gate: the mechanism, driven by a vocabulary invented for these tests.
+"""alx.verify.gates.public: the mechanism, driven by a vocabulary invented for these tests.
 
 The real vocabulary is private and lives outside this repository - that is the whole point of the
 module - so everything here is fabricated: "Widget" is the forbidden name, "W-1234" the forbidden
@@ -30,8 +30,8 @@ from pathlib import Path
 
 import pytest
 
-from alx.verify import public_gate
-from alx.verify.public_gate import Vocabulary
+from alx.verify.gates import public as public_gate
+from alx.verify.gates.public import Vocabulary
 
 VOCAB = {
     "groups": [

@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: MIT
 """The verification runner depends on mechanisms, never its test application.
 
-And the repository is laid out by the verification template, which alx.verify.layout states as
-data, with every data file identifying itself (alx.verify.data_source): the same two checks
+And the repository is laid out by the verification template, which alx.verify.gates.layout states as
+data, with every data file identifying itself (alx.verify.gates.data_source): the same two checks
 every repository's own architecture self-test calls on itself.
 """
 
@@ -10,7 +10,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from alx.verify import data_source, layout
+from alx.verify.gates import data_source, layout
 
 
 def test_ALX1564_P337_this_repository_follows_the_verification_template():

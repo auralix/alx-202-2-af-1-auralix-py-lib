@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""alx.c_lib.mutation_hooks: the three C hooks of the MUTATE lane, over a scripted compiler.
+"""alx.verify.mutation_hooks: the three C hooks of the MUTATE lane, over a scripted compiler.
 
 No compiler runs here. The argv is asserted directly and the exit code is scripted, the same way
 the host_build tests work; the real clang is exercised by a C repository's own mutate lane.
@@ -24,8 +24,8 @@ from pathlib import Path
 
 import pytest
 
-from alx.c_lib import host_build
-from alx.c_lib import mutation_hooks as mh
+from alx.verify import host_build
+from alx.verify import mutation_hooks as mh
 
 COFF = b"\x4c\x01\x02\x00" + b"\x11\x22\x33\x44" + b"body of the object"
 ELF = mh.ELF_MAGIC + b"\x02\x01\x01\x00" + b"body of the object"

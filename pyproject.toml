@@ -113,7 +113,7 @@ disallow_incomplete_defs = false
 disallow_untyped_calls = false
 check_untyped_defs = true
 
-# COVERAGE - branch coverage of the package; gate = alx.verify.coverage_gate, evidence under build/coverage/
+# COVERAGE - branch coverage of the package; gate = alx.verify.gates.coverage, evidence under build/coverage/
 [tool.coverage.run]
 source = ["alx"]
 branch = true

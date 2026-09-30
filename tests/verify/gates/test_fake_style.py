@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""alx.verify.fake_style: the convention every link-time fake of a C library module follows.
+"""alx.verify.gates.fake_style: the convention every link-time fake of a C library module follows.
 
 The C here is text, never compiled: the gate scans, so a fragment is enough. One clean fake of an
 imaginary watchdog module is varied one rule at a time.
@@ -17,7 +17,7 @@ Proofs (ALX-1564):
   P329 check() turns a non-ASCII file into a finding; main() exits 0 on PASS, 1 on FAIL, --out
 """
 
-from alx.verify import fake_style
+from alx.verify.gates import fake_style
 
 GUARD = "#if defined(ALX_STM32F4) || defined(ALX_STM32F7)"
 CLEAN = f"""/**

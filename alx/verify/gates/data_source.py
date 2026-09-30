@@ -24,7 +24,7 @@ The ``source`` record, every field present and none empty:
 ``read`` and ``write`` are the two functions a repository's harness uses for its data files; both
 refuse a file whose record is incomplete. Usage as a gate::
 
-    python -m alx.verify.data_source <root> [--out report.txt]
+    python -m alx.verify.gates.data_source <root> [--out report.txt]
 
 Exit code 0 = PASS, 1 = FAIL. Every finding is one ``<path>: <what>`` line.
 """
@@ -132,7 +132,9 @@ def write(path: str | Path, source: dict[str, Any], data: Any) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     """Command line entry; see the module docstring."""
-    parser = argparse.ArgumentParser(prog="python -m alx.verify.data_source", description=__doc__)
+    parser = argparse.ArgumentParser(
+        prog="python -m alx.verify.gates.data_source", description=__doc__
+    )
     parser.add_argument("root", type=Path, help="the verification root")
     parser.add_argument("--out", help="also write the report to this file")
     args = parser.parse_args(argv)

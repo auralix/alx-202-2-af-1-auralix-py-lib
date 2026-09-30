@@ -13,7 +13,7 @@ per machine and no path is needed on the command line. A gate with NO vocabulary
 so as a verdict rather than a traceback: a machine that simply lacks the file would otherwise
 report PASS over a tree full of findings, which is worse than having no gate at all. Usage::
 
-    python -m alx.verify.public_gate <root> [--words <vocab.json>] [--base origin/master]
+    python -m alx.verify.gates.public <root> [--words <vocab.json>] [--base origin/master]
         [--exclude <name-or-relative-path>]... [--commits-only] [--history [--diff-only]]
         [--out <report.txt>]
 
@@ -23,7 +23,7 @@ adds - and marks whether a finding is still present at HEAD or lives only in his
 question that has to be answered before publishing a full history.
 
 Binary files are skipped by looking for a NUL byte, deliberately NOT by an allowlist of text
-suffixes the way :mod:`alx.verify.ascii_gate` selects its files. A leak gate must not silently skip
+suffixes the way :mod:`alx.verify.gates.ascii` selects its files. A leak gate must not silently skip
 a file type nobody thought to list; measured on one consumer, an allowlist skipped four real text
 files while exactly one file in the tree was binary. The number skipped is reported so the choice
 never becomes invisible.
@@ -135,7 +135,7 @@ def vocabulary_path(explicit: str | None = None) -> Path:
 def excluded(rel: Path, exclude: Iterable[str]) -> bool:
     """Return True when ``rel`` sits under an exclude: a folder name anywhere, or a path from root.
 
-    The same rule :mod:`alx.verify.ascii_gate` applies, so one vendor list serves both gates.
+    The same rule :mod:`alx.verify.gates.ascii` applies, so one vendor list serves both gates.
     """
     parts = rel.parts
     posix = rel.as_posix()
@@ -269,7 +269,7 @@ def scan_history(
 
 
 def _parse(argv: list[str] | None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(prog="python -m alx.verify.public_gate", description=__doc__)
+    parser = argparse.ArgumentParser(prog="python -m alx.verify.gates.public", description=__doc__)
     parser.add_argument("root", help="repository root to scan")
     parser.add_argument("--words", help=f"vocabulary JSON; default ${WORDS_ENV}")
     parser.add_argument(

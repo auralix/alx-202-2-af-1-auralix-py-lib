@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""alx.verify.c_style: the two mechanical C rules - no ternary, aligned doxygen tag columns.
+"""alx.verify.gates.c_style: the two mechanical C rules - no ternary, aligned doxygen tag columns.
 
 The C in these tests is written as text, never compiled: the gate scans, so a fragment is enough.
 Tab stop 4 throughout, and every doc block is written with real tabs.
@@ -20,7 +20,7 @@ Proofs (ALX-1544):
        never leaves the string
 """
 
-from alx.verify import c_style
+from alx.verify.gates import c_style
 
 CLEAN = (
     "/**\n"

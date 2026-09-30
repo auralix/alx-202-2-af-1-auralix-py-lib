@@ -12,8 +12,9 @@ Three report formats, one gate for every language of the pipeline:
 Every metric is gated on its own: a combined percentage would let missing branches hide behind
 covered lines. A metric with nothing to cover (no branches in the file) counts as 100 %. Usage::
 
-    python -m alx.verify.coverage_gate build/coverage/coverage.xml --min 100 [--out f] [file ...]
-    python -m alx.verify.coverage_gate summary.json --metrics lines,branches,regions,functions foo.c
+    python -m alx.verify.gates.coverage build/coverage/coverage.xml --min 100 [--out f] [file ...]
+    python -m alx.verify.gates.coverage summary.json foo.c
+        --metrics lines,branches,regions,functions
 
 Without file arguments every file in the report is gated; a file argument matches the report's path
 exactly or by its trailing components (``alxFoo.c`` matches ``C:/repo/alxFoo.c``). Exit code 0 =
@@ -188,7 +189,9 @@ def evaluate(
 
 def main(argv: list[str] | None = None) -> int:
     """Command line entry; see the module docstring."""
-    parser = argparse.ArgumentParser(prog="python -m alx.verify.coverage_gate", description=__doc__)
+    parser = argparse.ArgumentParser(
+        prog="python -m alx.verify.gates.coverage", description=__doc__
+    )
     parser.add_argument("report", help="cobertura .xml, llvm-cov export .json or coverage.py .json")
     parser.add_argument(
         "--min", type=float, default=100.0, help="minimum percent for every gated metric"

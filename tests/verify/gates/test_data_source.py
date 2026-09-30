@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""alx.verify.data_source: every test data file identifies itself completely.
+"""alx.verify.gates.data_source: every test data file identifies itself completely.
 
 Proofs (ALX-1564):
   P345 a complete file passes the check; write() writes it as LF ASCII JSON and read() returns it;
@@ -15,7 +15,7 @@ import re
 
 import pytest
 
-from alx.verify import data_source
+from alx.verify.gates import data_source
 
 SOURCE = {
     "kind": "cli_items",

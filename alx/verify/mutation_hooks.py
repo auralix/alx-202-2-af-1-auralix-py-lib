@@ -15,9 +15,9 @@ data the consumer already owns next to its source lists, so it is passed by name
 copied into a script - the repository declares a sequence of ``(target, dependencies, build)`` and
 names it on the command line::
 
-    python -m alx.c_lib.mutation_hooks check <file> -I <dir> -D <macro> [--std gnu99]
-    python -m alx.c_lib.mutation_hooks fingerprint <file> --work <dir> -I <dir> -D <macro>
-    python -m alx.c_lib.mutation_hooks rebuild --groups harness.build:DLL_GROUPS
+    python -m alx.verify.mutation_hooks check <file> -I <dir> -D <macro> [--std gnu99]
+    python -m alx.verify.mutation_hooks fingerprint <file> --work <dir> -I <dir> -D <macro>
+    python -m alx.verify.mutation_hooks rebuild --groups harness.build:DLL_GROUPS
 
 so a consumer's MUTATE lane needs no file of its own; ``--sys-path <dir>`` puts a folder first
 on the import path, for a groups module that is not installed. Exit code 0 = yes / done,
@@ -37,7 +37,7 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from alx.c_lib import host_build
+from alx.verify import host_build
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Sequence
@@ -189,7 +189,9 @@ def _add_compile_options(parser: argparse.ArgumentParser) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     """Command line entry; see the module docstring."""
-    parser = argparse.ArgumentParser(prog="python -m alx.c_lib.mutation_hooks", description=__doc__)
+    parser = argparse.ArgumentParser(
+        prog="python -m alx.verify.mutation_hooks", description=__doc__
+    )
     sub = parser.add_subparsers(dest="hook", required=True)
     _add_compile_options(sub.add_parser("check", help="exit 0 when the file compiles"))
     fingerprint = sub.add_parser("fingerprint", help="print the hash of the file's object code")

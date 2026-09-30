@@ -7,20 +7,27 @@ root of a Python repository, ``Test/`` of a C one - and this module states it as
 - ``REQUIRED`` files at the root, and a ``tests/`` tree.
 - ``ROOT_DIRS``: the only folders at the root, besides a Python repository's import packages and
   hidden folders.
-- ``HOST_ROLES`` and ``TARGET_ROLES``: C compiled for the host or into the target image sits in
-  a folder named after its role, never loose.
+- ``ROLES``: C compiled for the host or into the target image sits directly in a folder named
+  after its role, and each role folder holds one shape of file (``ROLE_FILES``): the folder is the
+  role, the file's suffix repeats it - ``fakes/<prefix><Module>Fake.c``,
+  ``helpers/<prefix><Module>TestHelpers.c`` (a part in its own file: ``..._TestHelpers_<Part>.c``),
+  ``checks/<prefix><Subject>Check.c``, ``shim/<prefix>HostShim.c`` and ``.h``; a shim header that
+  replaces a vendor header keeps the vendor's name, because the product's includes must find it.
+- ``harness/``: ``__init__.py`` and the packages ``host/`` and ``target/``, nothing else; a module
+  is ``<snake_case>.py`` and never ``test_*``, which is a test module's name.
 - ``TESTS_DIRS``: the first level of ``tests/`` - the execution location in a C repository; in a
   Python repository one folder per sub-package of the import package it mirrors. Both may add
   ``framework/`` for the checks of the verification system itself and ``integration/``.
 - Every Python file in ``tests/`` is ``test_<snake_case>.py``, ``__init__.py`` or
-  ``conftest.py``, and every folder holding Python is a package. Test data is in ``data/`` at
-  the root, at any depth inside it, and nowhere in ``tests/``; every data file identifies
-  itself (``alx.verify.data_source``).
+  ``conftest.py``, and every folder holding Python is a package. A framework test mirrors what it
+  checks: a harness module, ``conftest``, ``noxfile``, a host role folder, or ``architecture`` for
+  the rules that span files. Test data is in ``data/`` at the root, at any depth inside it, and
+  nowhere in ``tests/``; every data file identifies itself (``alx.verify.gates.data_source``).
 
 Only what Git tracks is checked: build outputs, caches and virtual environments are not the
 repository's, so they are never a finding. Usage::
 
-    python -m alx.verify.layout <root> --kind c|python [--package alx ...] [--out report.txt]
+    python -m alx.verify.gates.layout <root> --kind c|python [--package alx ...] [--out report.txt]
 
 Exit code 0 = PASS, 1 = FAIL. Every finding is one ``<path>: <what>`` line.
 """
@@ -39,13 +46,27 @@ if TYPE_CHECKING:
 
 REQUIRED = ("noxfile.py", "pyproject.toml", "uv.lock")
 ROOT_DIRS = frozenset({"tests", "harness", "host", "target", "config", "data", "build"})
-HOST_ROLES = frozenset({"helpers", "fakes", "checks"})
-TARGET_ROLES = frozenset({"helpers", "checks"})
+ROLES = frozenset({"helpers", "fakes", "checks", "shim"})
+ROLE_FILES = {
+    "fakes": re.compile(r"^[a-z0-9]+[A-Z][A-Za-z0-9]*Fake\.c$"),
+    "helpers": re.compile(r"^[a-z0-9]+[A-Z][A-Za-z0-9]*TestHelpers(?:_[A-Z][A-Za-z0-9]*)?\.c$"),
+    "checks": re.compile(r"^[a-z0-9]+[A-Z][A-Za-z0-9]*Check\.c$"),
+    "shim": re.compile(r"^(?:[a-z0-9]+HostShim\.[ch]|[A-Za-z0-9_]+\.h)$"),
+}
+ROLE_SHAPES = {
+    "fakes": "<prefix><Module>Fake.c",
+    "helpers": "<prefix><Module>TestHelpers.c or ..._TestHelpers_<Part>.c",
+    "checks": "<prefix><Subject>Check.c",
+    "shim": "<prefix>HostShim.c or .h, or the vendor header it replaces",
+}
+HARNESS_PACKAGES = frozenset({"host", "target"})
+FRAMEWORK_FIXED = frozenset({"conftest", "noxfile", "architecture"})
 TESTS_DIRS = {"c": frozenset({"host", "target"}), "python": frozenset()}
 TESTS_COMMON = frozenset({"framework", "integration"})
 TESTS_FILES = frozenset({"__init__.py", "conftest.py"})
 
 _TEST_MODULE = re.compile(r"^test_[a-z0-9]+(?:_[a-z0-9]+)*\.py$")
+_MODULE = re.compile(r"^[a-z][a-z0-9_]*\.py$")
 
 
 def tracked(root: Path) -> list[str]:
@@ -80,6 +101,15 @@ def check_paths(paths: Iterable[str], kind: str, packages: Iterable[str] = ()) -
     allowed_tests = TESTS_DIRS[kind] | TESTS_COMMON
     if kind == "python":
         allowed_tests |= _sub_packages(files, packages)
+    mirrors = (
+        FRAMEWORK_FIXED
+        | ROLES
+        | {
+            f.stem
+            for f in files
+            if f.parts[0] == "harness" and len(f.parts) == 3 and f.suffix == ".py"
+        }
+    )
     test_dirs: set[PurePosixPath] = set()
     for f in files:
         top = f.parts[0]
@@ -87,12 +117,12 @@ def check_paths(paths: Iterable[str], kind: str, packages: Iterable[str] = ()) -
             continue
         if top not in ROOT_DIRS and top not in packages and not top.startswith("."):
             findings.append(f"{f}: {top}/ is not a folder of the template")
-        elif top == "host" and (len(f.parts) < 3 or f.parts[1] not in HOST_ROLES):
-            findings.append(f"{f}: host/ holds only {', '.join(sorted(HOST_ROLES))}/")
-        elif top == "target" and (len(f.parts) < 3 or f.parts[1] not in TARGET_ROLES):
-            findings.append(f"{f}: target/ holds only {', '.join(sorted(TARGET_ROLES))}/")
+        elif top in ("host", "target"):
+            findings += _c_file(f)
+        elif top == "harness":
+            findings += _harness_file(f)
         elif top == "tests":
-            findings += _test_file(f, allowed_tests)
+            findings += _test_file(f, allowed_tests, mirrors)
             if f.suffix == ".py":  # a folder holding Python is a package; data is a finding above
                 test_dirs.update(p for p in f.parents if p.parts and p.parts[0] == "tests")
     for folder in sorted(test_dirs):
@@ -101,7 +131,31 @@ def check_paths(paths: Iterable[str], kind: str, packages: Iterable[str] = ()) -
     return findings
 
 
-def _test_file(f: PurePosixPath, allowed: frozenset[str] | set[str]) -> list[str]:
+def _c_file(f: PurePosixPath) -> list[str]:
+    """Return the findings for a file under ``host/`` or ``target/``: role folder and shape."""
+    if len(f.parts) < 3 or f.parts[1] not in ROLES:
+        return [f"{f}: {f.parts[0]}/ holds only {', '.join(sorted(ROLES))}/"]
+    role = f.parts[1]
+    if len(f.parts) > 3 or not ROLE_FILES[role].match(f.name):
+        return [f"{f}: {f.parts[0]}/{role}/ holds only {ROLE_SHAPES[role]}, directly"]
+    return []
+
+
+def _harness_file(f: PurePosixPath) -> list[str]:
+    """Return the findings for one file under ``harness/``: the two packages, snake_case modules."""
+    shape = f"harness/ holds __init__.py and the packages {', '.join(sorted(HARNESS_PACKAGES))}/"
+    if len(f.parts) == 2:
+        return [] if f.name == "__init__.py" else [f"{f}: {shape}"]
+    if len(f.parts) > 3 or f.parts[1] not in HARNESS_PACKAGES:
+        return [f"{f}: {shape}"]
+    if f.name != "__init__.py" and (not _MODULE.match(f.name) or f.name.startswith("test_")):
+        return [f"{f}: a harness module is <snake_case>.py, never test_*"]
+    return []
+
+
+def _test_file(
+    f: PurePosixPath, allowed: frozenset[str] | set[str], mirrors: frozenset[str] | set[str]
+) -> list[str]:
     """Return the findings for one file under ``tests/``."""
     if len(f.parts) > 2 and f.parts[1] not in allowed:
         return [f"{f}: tests/{f.parts[1]}/ is not a folder of the template"]
@@ -109,6 +163,13 @@ def _test_file(f: PurePosixPath, allowed: frozenset[str] | set[str]) -> list[str
         return [f"{f}: test data belongs in data/ at the verification root"]
     if f.name not in TESTS_FILES and not _TEST_MODULE.match(f.name):
         return [f"{f}: a test module is test_<snake_case>.py"]
+    if len(f.parts) == 3 and f.parts[1] == "framework" and f.name not in TESTS_FILES:
+        subject = f.stem[5:]
+        if not any(subject == m or subject.startswith(m + "_") for m in mirrors):
+            return [
+                f"{f}: a framework test mirrors a harness module, conftest, noxfile, a host role "
+                "or architecture"
+            ]
     return []
 
 
@@ -119,7 +180,7 @@ def check(root: Path, kind: str, packages: Iterable[str] = ()) -> list[str]:
 
 def main(argv: list[str] | None = None) -> int:
     """Command line entry; see the module docstring."""
-    parser = argparse.ArgumentParser(prog="python -m alx.verify.layout", description=__doc__)
+    parser = argparse.ArgumentParser(prog="python -m alx.verify.gates.layout", description=__doc__)
     parser.add_argument("root", type=Path, help="the verification root")
     parser.add_argument("--kind", choices=sorted(TESTS_DIRS), required=True)
     parser.add_argument("--package", action="append", default=[], help="an import package")
