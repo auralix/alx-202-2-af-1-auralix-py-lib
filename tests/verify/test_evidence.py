@@ -106,7 +106,7 @@ def test_ALX1564_P351_bundle_copies_a_run_only_for_the_image_it_tested(tmp_path)
     image.write_bytes(b"\x00\x01\x02" * 100)
     other = tmp_path / "other.bin"
     other.write_bytes(b"\x03" * 10)
-    run = tmp_path / "runs" / "260930094755-930446"
+    run = tmp_path / "runs" / "run-one"
     (run / "api").mkdir(parents=True)
     record = {"path": "x", "size": 300, "sha256": hashlib.sha256(image.read_bytes()).hexdigest()}
     (run / "image.json").write_text(json.dumps(record), encoding="utf-8")
