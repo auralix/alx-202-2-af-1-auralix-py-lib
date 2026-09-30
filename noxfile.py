@@ -64,7 +64,7 @@ def build(session: nox.Session) -> None:
     session.run(uv, "pip", "install", "-q", "--python", str(smoke), str(wheels[0]), external=True)
     session.run(
         str(_venv_python(smoke)),
-        "-I",  # isolated: the import can only come from the installed wheel, not from ./alx at the cwd
+        "-I",  # isolated: only the installed wheel is importable, never ./alx at the cwd
         "-c",
         "import alx, alx.debug_probe, alx.debug_probe.jlink, alx.psu.owon_p4603, alx.c_lib.cli, "
         "alx.c_lib.trace, alx.fw.live_watch, alx.serial_logger, alx.verify, alx.verify.evidence, "
