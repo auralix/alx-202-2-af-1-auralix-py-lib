@@ -12,6 +12,8 @@
 * random order on record: when pytest-randomly is active, its seed lands in the junit XML as the
   testsuite property ``randomly_seed`` (the seed policy: random every run, never fixed, always
   recorded; reproduce with ``--randomly-seed=<n>``)
+* ``bundle``: a run's evidence copied into a release folder, once the release image is proven to
+  be the image the run tested (the sha256 the launcher wrote into the run's ``image.json``)
 
 Load from a suite's ``conftest.py``, one of two ways::
 
@@ -28,14 +30,19 @@ Nothing here touches hardware or firmware; host suites and bench suites use it a
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
+import shutil
 import subprocess
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     import pytest
 
 PROOF_RE = re.compile(r"ALX(\d+)_P(\d+)")
@@ -108,3 +115,37 @@ def run_dir(test_dir: str | Path, env_var: str = "ALX_HIL_RUN_DIR") -> Path:
     """
     env = os.environ.get(env_var)
     return Path(env) if env else Path(test_dir) / "build" / "runs" / time.strftime("%y%m%d%H%M%S")
+
+
+def bundle(
+    run_dir: str | Path, dest: str | Path, image: str | Path, exclude: Iterable[str] = ()
+) -> list[Path]:
+    """Copy a run's evidence into ``dest``, once ``image`` is proven to be the image the run tested.
+
+    The launcher writes ``image.json`` into the run folder with the sha256 of the image it flashed;
+    the copy is refused when ``image`` hashes differently, so a release never carries the test run
+    of another build. Files whose name is in ``exclude`` are left out (a UART transcript is
+    megabytes that prove nothing the reports do not); everything else is copied as the run wrote
+    it, folders included, into ``dest``, which must not exist yet. Returns the copied files.
+    """
+    run, target, released = Path(run_dir), Path(dest), Path(image)
+    record = run / "image.json"
+    if not record.is_file():
+        raise ValueError(f"{run} holds no image.json: not a run that flashed an image")
+    recorded: str = json.loads(record.read_text(encoding="utf-8")).get("sha256", "")
+    actual = hashlib.sha256(released.read_bytes()).hexdigest()
+    if recorded.lower() != actual:
+        msg = f"{released.name} is not the image this run tested: run {recorded[:12]}, image {actual[:12]}"  # noqa: E501 - one message, both hashes
+        raise ValueError(msg)
+    if target.exists():
+        raise ValueError(f"{target} exists: evidence is written once, never overwritten")
+    skipped = set(exclude)
+    copied = []
+    for path in sorted(p for p in run.rglob("*") if p.is_file()):
+        if path.name in skipped:
+            continue
+        out = target / path.relative_to(run)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, out)
+        copied.append(out)
+    return copied

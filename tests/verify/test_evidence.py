@@ -10,8 +10,13 @@ Proofs (ALX-1544):
   P64 loaded through pytest_plugins (this suite's conftest), the hook tags THIS test with its proof token
   P148 pytest-randomly's seed is recorded as the junit testsuite property randomly_seed; without the plugin
        nothing is recorded (the seed policy: random every run, always in the evidence, never fixed)
+  P351 bundle copies a run folder, structure kept and the excluded names left out, only for the image
+       whose sha256 the run recorded; another image, a run without image.json and an existing
+       destination are refused, and nothing is copied then (ALX-1564)
 """
 
+import hashlib
+import json
 import re
 import subprocess
 from pathlib import Path
@@ -20,7 +25,7 @@ from typing import Any
 import pytest
 
 import alx.verify.evidence as evidence
-from alx.verify.evidence import git_head, pytest_collection_modifyitems, run_dir
+from alx.verify.evidence import bundle, git_head, pytest_collection_modifyitems, run_dir
 
 
 class _Mark:
@@ -93,6 +98,39 @@ def test_ALX1564_P342_git_head_marks_a_tree_whose_tracked_files_differ_from_head
     assert git_head(repo) == f"{clean}-dirty", "a modified tracked file marks the head"
     _git(repo, "add", "a.txt")
     assert git_head(repo) == f"{clean}-dirty", "so does a staged one"
+
+
+def test_ALX1564_P351_bundle_copies_a_run_only_for_the_image_it_tested(tmp_path):
+    image = tmp_path / "Rel" / "fw_V0-8-0_abc1234.bin"
+    image.parent.mkdir()
+    image.write_bytes(b"\x00\x01\x02" * 100)
+    other = tmp_path / "other.bin"
+    other.write_bytes(b"\x03" * 10)
+    run = tmp_path / "runs" / "260930094755-930446"
+    (run / "api").mkdir(parents=True)
+    record = {"path": "x", "size": 300, "sha256": hashlib.sha256(image.read_bytes()).hexdigest()}
+    (run / "image.json").write_text(json.dumps(record), encoding="utf-8")
+    (run / "functionality.md").write_text("# report\n", encoding="ascii")
+    (run / "api" / "pytest_report.xml").write_text("<testsuites/>\n", encoding="ascii")
+    (run / "api" / "uart.log").write_bytes(b"x" * 5000)
+
+    dest = image.parent / "fw_V0-8-0_abc1234_TestEvidence"
+    copied = bundle(run, dest, image, exclude={"uart.log"})
+    assert [p.relative_to(dest).as_posix() for p in copied] == [
+        "api/pytest_report.xml",
+        "functionality.md",
+        "image.json",
+    ]
+    assert (dest / "api" / "pytest_report.xml").read_text(encoding="ascii") == "<testsuites/>\n"
+    assert not (dest / "api" / "uart.log").exists(), "the excluded name is left out"
+    with pytest.raises(ValueError, match="exists"):
+        bundle(run, dest, image)
+    with pytest.raises(ValueError, match="not the image this run tested"):
+        bundle(run, tmp_path / "elsewhere", other)
+    assert not (tmp_path / "elsewhere").exists(), "nothing is copied for another image"
+    (run / "image.json").unlink()
+    with pytest.raises(ValueError, match=r"no image\.json"):
+        bundle(run, tmp_path / "elsewhere", image)
 
 
 def test_ALX1544_P63_run_dir_from_the_launcher_or_a_timestamp(tmp_path, monkeypatch):
