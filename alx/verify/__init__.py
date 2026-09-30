@@ -22,4 +22,7 @@ library's own modules: paths, thresholds and commands come from the caller (the 
 * ``public_gate``: no private vocabulary in the files and commit messages of a public repository.
 * ``layout``: a verification root holds the template's entries, and every tracked file has its
   place - the verification template as data, checked by every repository on itself.
+* ``data_source``: every test data file identifies itself - what it is, what produced it, from
+  which firmware, build and source tree, when - in a ``source`` record inside the file; also the
+  reader and writer of such files.
 """
