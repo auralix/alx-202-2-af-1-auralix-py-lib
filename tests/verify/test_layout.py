@@ -12,11 +12,13 @@ Proofs (ALX-1564):
   P333 host/ and target/ hold only their role folders, and nothing loose
   P334 the first level of tests/: the execution locations of a C root, the mirrored sub-packages
        of a Python root, framework/ and integration/ in both
-  P335 test modules are test_<snake_case>.py, every test folder is a package
+  P335 test modules are test_<snake_case>.py, test data is not in tests/, every folder holding
+       Python is a package
   P336 check() reads what Git tracks, untracked build output is never a finding; main() exits 0 on
        PASS, 1 on FAIL, and --out writes the same report
-  P343 test data sits in a data/ folder beside the tests that use it, at any depth of tests/; a
-       data folder is no package; a data file outside one, or a data/ at the root, is a finding
+  P344 test data is in data/ at the verification root, at any depth inside it; a data folder
+       inside tests/ is a finding per file, not a missing package. P343, the rule of 0.12.0 that
+       put data beside its tests, is withdrawn: TV decided on 2026-09-30 for one root folder
 """
 
 import subprocess
@@ -29,6 +31,7 @@ C_ROOT = [
     "pyproject.toml",
     "uv.lock",
     "config/alxConfig.h",
+    "data/cli_items.json",
     "harness/__init__.py",
     "harness/build.py",
     "host/checks/alxFifoSanSmoke.c",
@@ -44,7 +47,6 @@ C_ROOT = [
     "tests/host/alx/test_fifo.py",
     "tests/host/alx/test_param_item_kv.py",
     "tests/target/__init__.py",
-    "tests/target/data/cli_items.json",
     "tests/target/test_boot.py",
 ]
 PY_ROOT = [
@@ -118,27 +120,27 @@ def test_ALX1564_P335_test_modules_data_and_packages():
     paths = [
         *C_ROOT,
         "tests/host/alx/TestFifo.py",
+        "tests/host/alx/fifo_vectors.json",
         "tests/host/alx/ext/test_ina228.py",
     ]
     assert layout.check_paths(paths, "c") == [
         "tests/host/alx/TestFifo.py: a test module is test_<snake_case>.py",
+        "tests/host/alx/fifo_vectors.json: test data belongs in data/ at the verification root",
         "tests/host/alx/ext/: not a package (no __init__.py)",
     ]
 
 
-def test_ALX1564_P343_test_data_sits_in_a_data_folder_beside_its_tests():
+def test_ALX1564_P344_test_data_is_in_data_at_the_root_only():
     paths = [
         *C_ROOT,
+        "data/tables/crc.csv",
         "tests/host/alx/data/fifo_vectors.json",
-        "tests/host/alx/data/tables/crc.csv",
         "tests/data/shared.bin",
-        "data/cli_items.json",
-        "tests/host/alx/fifo_vectors.json",
     ]
     assert layout.check_paths(paths, "c") == [
-        "data/cli_items.json: data/ is not a folder of the template",
-        "tests/host/alx/fifo_vectors.json: test data belongs in a data/ folder beside its tests",
-    ], "a data folder needs no __init__.py and holds anything, at any depth of tests/"
+        "tests/host/alx/data/fifo_vectors.json: test data belongs in data/ at the verification root",
+        "tests/data/shared.bin: tests/data/ is not a folder of the template",
+    ], "one data/ at the root, any depth inside it; a data folder in tests/ is a finding per file"
 
 
 def test_ALX1564_P336_check_reads_git_and_main_reports(tmp_path, capsys):
