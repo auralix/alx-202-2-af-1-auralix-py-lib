@@ -44,8 +44,10 @@ dev = [                                      # every lane: `uv sync --locked --e
     "nox>=2024",                             # the lane runner (sessions = the pipeline stages, alx.verify.lanes)
 ]
 
-[tool.setuptools]
-packages = ["alx", "alx.debug_probe", "alx.psu", "alx.can", "alx.c_lib", "alx.fw", "alx.verify"]
+[tool.setuptools.packages.find]
+# every package under alx/, found rather than listed: a listed set forgets a new sub-package,
+# and 0.15.0 shipped without alx.verify.gates that way
+include = ["alx*"]
 
 [tool.setuptools.package-data]
 # the consumer ruff profile is shipped, not generated: a C repo's ANALYZE stage passes it to ruff
