@@ -17,7 +17,10 @@ Nothing here knows the library's own modules: paths, thresholds and commands com
 * ``mutation``: plant each mutant of a source, run its tests, classify, report the survivors;
   ``mutation_hooks``: what the lane must ask a compiler when the mutated language is C - is the
   mutant valid C, is its object code the same, rebuild the binaries under test.
+* ``configs``: the configuration matrix of a C repository - every source compiled in every row
+  of its matrix file, each row's configuration header synthesized from fragments, every finding,
+  the headers and names the fakes lack, and the lines no row compiled.
 * ``gates``: the gates, each a command (``python -m alx.verify.gates.<gate> ...``) with a PASS/FAIL
   verdict, ``--out`` and exit code 0 = PASS / 1 = FAIL, and a function: ``ascii``, ``c_style``,
-  ``coverage``, ``data_source``, ``fake_style``, ``layout``, ``public``.
+  ``configs``, ``coverage``, ``data_source``, ``fake_style``, ``layout``, ``public``.
 """

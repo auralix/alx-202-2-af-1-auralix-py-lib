@@ -72,7 +72,8 @@ def build(session: nox.Session) -> None:
         "alx.verify.gates.fake_style, "
         "alx.verify.results, alx.verify.gates.layout, alx.verify.gates.data_source, "
         "alx.verify.host_build, alx.verify.mutation_hooks, "
-        "alx.verify.gates.coverage, alx.verify.mutation; print('installed alx', alx.__version__)",
+        "alx.verify.gates.coverage, alx.verify.mutation, alx.verify.configs, "
+        "alx.verify.gates.configs; print('installed alx', alx.__version__)",
         external=True,
     )
     session.log(f"BUILD CLEAN - {[w.name for w in wheels + sdists]} in {out}")
