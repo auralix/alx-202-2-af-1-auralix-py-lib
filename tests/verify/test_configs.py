@@ -31,6 +31,12 @@ Proofs (ALX-1564):
        the repository's own undeclared names a FAIL), the dependency pass only when a header is
        missing, coverage from the measured rows only, report.json and report.md
   P366 a run refuses a word it cannot give a meaning and a selection that matches no row
+  P369 a missing member is named with the structure it is missing from, so one of the
+       repository's own structures makes it the repository's finding (FAIL), a vendor's the
+       fake's (NO SHIM); a structure without a name leaves the member alone
+  P370 a repository's further configuration headers are written into every row's folder, each
+       with the row's operations on the names it declares; the base takes the rest, an
+       undeclared name an error there or, asked for, appended
 """
 
 import json
@@ -425,7 +431,7 @@ def test_ALX1564_P362_compiler_output_becomes_findings_headers_and_identifiers(t
     assert findings[-2].render() == "a.c:12:6: warning: unused variable 'y' [-Wunused-variable]"
     assert [cf.missing_header(f) for f in findings[:3]] == ["zephyr/kernel.h", "lwip/api.h", None]
     assert cf.undeclared(findings) == [
-        "GPIOA", "HAL_Init", "k_sleep", "NVIC", "TaskHandle_t", "Init", "Mode",
+        "GPIOA", "HAL_Init", "k_sleep", "NVIC", "TaskHandle_t", "ADC_HandleTypeDef.Init", "x.Mode",
     ]  # fmt: skip
     found = _write(tmp_path / "found.h", "")
     rule = (
@@ -640,3 +646,66 @@ def test_ALX1564_P366_a_run_refuses_words_it_cannot_mean_and_selections_that_mat
     defined.check(defined.matrix.rows)
     assert defined.platform("q").flags == ("-q",)
     assert _matrix(repo).platform("p").defines == ("PART",)
+
+
+# -- members and further headers --------------------------------------------------------------------
+def test_ALX1564_P369_a_missing_member_is_named_with_its_structure_and_judged_by_it(repo, tmp_path):
+    output = "\n".join(
+        [
+            "a.c:1:6: error: 'AlxNet' has no member named 'cellular'",
+            "a.c:2:6: error: 'SPI_TypeDef' {aka 'struct shim_Struct'} has no member named 'CR9'",
+            "a.c:3:6: error: 'union u' has no member named 'w'",
+            "a.c:4:6: error: no member named 'k' in 'struct own_s'",
+            "a.c:5:6: error: 'struct <anonymous>' has no member named 'anon'",
+        ]
+    )
+    assert cf.undeclared(cf.parse_diagnostics(output)) == [
+        "AlxNet.cellular", "SPI_TypeDef.CR9", "u.w", "own_s.k", "anon",
+    ]  # fmt: skip
+    scripted = ScriptedCompiler(repo)
+    plain = _matrix(repo, sources=[repo / "lib" / "a.c"], own=("own_",))
+
+    def member(argv, env=None):
+        if "-fsyntax-only" in argv:
+            owner = "own_s" if "0001" in " ".join(argv) else "vendor_s"
+            err = f"{argv[-1]}:5:2: error: no member named 'k' in 'struct {owner}'\n"
+            return subprocess.CompletedProcess(argv, 1, "", err)
+        return scripted(argv, env)
+
+    report = cf.run_matrix(plain, tmp_path / "member", runner=member, only=["0001", "0002"])
+    assert [r["status"] for r in report["rows"]] == ["FAIL", "NO SHIM"]
+    assert [r["undeclared"] for r in report["rows"]] == [["own_s.k"], ["vendor_s.k"]]
+
+
+def test_ALX1564_P370_further_headers_take_the_names_they_declare_and_the_base_the_rest(
+    repo, tmp_path
+):
+    _write(
+        repo / "prod.h",
+        "#ifndef PROD_H\n#define PROD_H\n#define PROD_APP\n//#define PROD_TEST\n#define LEVEL 9\n"
+        "#endif\n",
+    )
+    _write(repo / "frag" / "target" / "t.h", "#define PROD_TEST\n#undef PROD_APP\n")
+    product = _matrix(repo, headers={"prod.h": repo / "prod.h"})
+    row = product.matrix.rows[0]
+    headers = cf.row_headers(product, row)
+    assert list(headers) == ["cfg.h", "prod.h"]
+    assert headers["prod.h"] == (
+        "#ifndef PROD_H\n#define PROD_H\n//#define PROD_APP\n#define PROD_TEST\n#define LEVEL 3\n"
+        "#endif\n"
+    )  # LEVEL is declared by both headers, so both take it
+    assert headers["cfg.h"] == cf.synthesize(BASE, [("define", "FEAT", None), ("define", "LEVEL", "3"),
+                                                    ("define", "EXAMPLE", None)])  # fmt: skip
+    _write(repo / "frag" / "target" / "t.h", "#define PROD_TEST\n#define BUILD 1\n")
+    with pytest.raises(MatrixError, match="BUILD: not declared"):
+        cf.row_headers(product, row)
+    folder = cf.write_config(_matrix(repo, headers={"prod.h": repo / "prod.h"}, append=True), row,
+                             tmp_path / "w")  # fmt: skip
+    assert sorted(p.name for p in folder.iterdir()) == ["cfg.h", "cfg_usr.h", "prod.h"]
+    assert (
+        (folder / "cfg.h")
+        .read_text(encoding="utf-8")
+        .endswith("// Matrix: switches the base header does not declare\n#define BUILD 1\n#endif\n")
+    )
+    assert "#define PROD_TEST\n" in (folder / "prod.h").read_text(encoding="utf-8")
+    assert "PROD_TEST" not in (folder / "cfg.h").read_text(encoding="utf-8")

@@ -47,7 +47,10 @@ fragment. :func:`synthesize` applies the five in axis order to the base header, 
 is the base with exactly that row's switches changed, readable and diffable. A ``platform`` table
 says what a platform word means to a compiler; the top-level ``defines`` and ``includes`` hold for
 every row (the build defines every product sets, the fakes of the features); the compilers
-themselves (:class:`Compiler`) are machine configuration and come from the caller.
+themselves (:class:`Compiler`) are machine configuration and come from the caller. A repository
+configured through more than one header - a product configures its own modules in headers of their
+own - names the others in :attr:`Matrix.headers`, and each operation goes to the header declaring
+its name.
 
 Per row, every source is compiled with ``-fsyntax-only`` and the compiler's warnings; a diagnostic
 is a finding, a missing header and an undeclared identifier are named, and when a header is missing
@@ -137,6 +140,15 @@ _UNDECLARED = (
     re.compile(r"unknown type name '(?P<name>[A-Za-z_]\w*)'"),
     re.compile(r"has no member named '(?P<name>[A-Za-z_]\w*)'"),
     re.compile(r"no member named '(?P<name>[A-Za-z_]\w*)'"),
+)
+_MEMBER = (
+    re.compile(
+        r"'(?:struct |union )?(?P<owner>[A-Za-z_]\w*)'(?: \{aka '[^']*'\})?"
+        r" has no member named '(?P<name>[A-Za-z_]\w*)'"
+    ),
+    re.compile(
+        r"no member named '(?P<name>[A-Za-z_]\w*)' in '(?:struct |union )?(?P<owner>[A-Za-z_]\w*)'"
+    ),
 )
 _LINE_MARKER = re.compile(r'^# (?P<line>\d+) "(?P<file>(?:[^"\\]|\\.)*)"')
 _DIRECTIVE = re.compile(r"^\s*#\s*(?P<kind>ifdef|ifndef|if|elif|else|endif)\b(?P<rest>.*)$")
@@ -440,12 +452,23 @@ def synthesize(base: str, operations: Iterable[Operation], *, append: bool = Fal
     return "\n".join(lines) + "\n"
 
 
-def row_config(base: Path, fragments: Path, row: Row, *, append: bool = False) -> str:
-    """Return the synthesized header of ``row``: the base plus its five fragments in axis order."""
+def row_operations(fragments: Path, row: Row) -> list[Operation]:
+    """Return the operations of ``row``: its five fragments' in axis order."""
     operations: list[Operation] = []
     for axis in AXES:
         operations.extend(parse_fragment(fragment_path(fragments, axis, row.words[axis])))
+    return operations
+
+
+def row_config(base: Path, fragments: Path, row: Row, *, append: bool = False) -> str:
+    """Return the synthesized header of ``row``: the base plus its five fragments in axis order."""
+    operations = row_operations(fragments, row)
     return synthesize(base.read_text(encoding="utf-8"), operations, append=append)
+
+
+def declared(text: str) -> set[str]:
+    """Return the names a configuration header declares, active or commented out."""
+    return {d.name for _, d in parse_config(text)}
 
 
 # -- compilers -----------------------------------------------------------------------------------
@@ -554,9 +577,18 @@ def missing_header(finding: Finding) -> str | None:
 
 
 def undeclared(findings: Iterable[Finding]) -> list[str]:
-    """Return the identifiers the findings call undeclared, unknown or missing, each once."""
+    """Return the identifiers the findings call undeclared, unknown or missing, each once.
+
+    A missing member is named with the structure it is missing from, ``Owner.member``: a member
+    one of the repository's own structures lacks is then the repository's finding by the owner's
+    prefix, and one a vendor's structure lacks the fake's.
+    """
     names: dict[str, None] = {}
     for f in findings:
+        member = next((m for pattern in _MEMBER if (m := pattern.search(f.text))), None)
+        if member is not None:
+            names[f"{member['owner']}.{member['name']}"] = None
+            continue
         for pattern in _UNDECLARED:
             m = pattern.search(f.text)
             if m:
@@ -782,7 +814,10 @@ class Matrix:
     row's configuration folder; ``aliases`` headers written into that folder that include a file
     of the repository under another name (a product-supplied ``*_usr.h`` that is the library's
     template); ``own`` the prefixes of the repository's own identifiers - an undeclared one is a
-    finding of the repository, not a fake to write.
+    finding of the repository, not a fake to write; ``headers`` the repository's further
+    configuration headers, by the name its sources include them (a product configures its own
+    modules in headers of their own): each is written into the folder too, with the row's
+    operations on the names it declares, and the base takes the rest.
     """
 
     root: Path
@@ -799,6 +834,7 @@ class Matrix:
     append: bool = False
     heads: Mapping[str, str] = field(default_factory=dict)
     config_name: str = ""
+    headers: Mapping[str, Path] = field(default_factory=dict)
 
     def platform(self, word: str) -> Platform:
         """Return the platform of a word: the caller's definition first, then the matrix file's."""
@@ -819,14 +855,31 @@ class Matrix:
             raise MatrixError("; ".join(dict.fromkeys(problems)))
 
 
+def row_headers(matrix: Matrix, row: Row) -> dict[str, str]:
+    """Return every configuration header of ``row`` by its name: the base's, then ``headers``.
+
+    An operation goes to every header declaring its name; one no further header declares goes to
+    the base, which declares it or, with ``append``, takes it in - else it is an error there.
+    """
+    operations = row_operations(matrix.fragments, row)
+    texts = {name: path.read_text(encoding="utf-8") for name, path in matrix.headers.items()}
+    names = {name: declared(text) for name, text in texts.items()}
+    elsewhere = set().union(*names.values())
+    base = matrix.base.read_text(encoding="utf-8")
+    own = declared(base)
+    kept = [op for op in operations if op[1] in own or op[1] not in elsewhere]
+    headers = {matrix.config_name or matrix.base.name: synthesize(base, kept, append=matrix.append)}
+    for name, text in texts.items():
+        headers[name] = synthesize(text, [op for op in operations if op[1] in names[name]])
+    return headers
+
+
 def write_config(matrix: Matrix, row: Row, out: Path) -> Path:
     """Write the row's configuration folder under ``out`` and return it."""
     folder = out / "config"
     folder.mkdir(parents=True, exist_ok=True)
-    text = row_config(matrix.base, matrix.fragments, row, append=matrix.append)
-    (folder / (matrix.config_name or matrix.base.name)).write_text(
-        text, encoding="utf-8", newline="\n"
-    )
+    for name, text in row_headers(matrix, row).items():
+        (folder / name).write_text(text, encoding="utf-8", newline="\n")
     for name, target in matrix.aliases.items():
         (folder / name).write_text(
             f'#include "{target.resolve().as_posix()}"\n', encoding="ascii", newline="\n"
