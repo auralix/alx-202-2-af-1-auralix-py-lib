@@ -26,6 +26,9 @@ Proofs (ALX-1564):
        <snake_case>.py and never test_*
   P355 a framework test mirrors what it checks: a harness module (continuations allowed), conftest,
        noxfile, a host role or architecture
+  P368 the fakes of a vendor tree sit in host/shim/<vendor>/, a lowercase word, as headers under the
+       include paths the code names; another folder name, a file that is not a header or a folder
+       no include path could name is a finding
 """
 
 import subprocess
@@ -260,3 +263,26 @@ def test_ALX1564_P336_check_reads_git_and_main_reports(tmp_path, capsys):
         "native/untracked.c: native/ is not a folder of the template\n"
     )
     assert out.read_text(encoding="ascii") == report
+
+
+def test_ALX1564_P368_a_vendor_folder_of_the_shim_holds_headers_under_their_include_paths():
+    good = [
+        *C_ROOT,
+        "host/shim/zephyr/zephyr/kernel.h",
+        "host/shim/zephyr/zephyr/drivers/gpio.h",
+        "host/shim/stm32-usb-host/usbh_core.h",
+        "host/shim/mcuboot/flash_map_backend/flash_map_backend.h",
+    ]
+    assert layout.check_paths(good, "c") == []
+    shape = "host/shim/<vendor>/ is a lowercase word holding the vendor's headers (.h) under their include paths"
+    bad = [
+        *C_ROOT,
+        "host/shim/Zephyr/kernel.h",
+        "host/shim/zephyr/kernel.c",
+        "host/shim/zephyr/my dir/x.h",
+    ]
+    assert layout.check_paths(bad, "c") == [
+        f"host/shim/Zephyr/kernel.h: {shape}",
+        f"host/shim/zephyr/kernel.c: {shape}",
+        f"host/shim/zephyr/my dir/x.h: {shape}",
+    ]

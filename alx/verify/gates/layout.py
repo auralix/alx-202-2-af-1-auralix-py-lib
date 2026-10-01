@@ -13,6 +13,8 @@ root of a Python repository, ``Test/`` of a C one - and this module states it as
   ``helpers/<prefix><Module>TestHelpers.c`` (a part in its own file: ``..._TestHelpers_<Part>.c``),
   ``checks/<prefix><Subject>Check.c``, ``shim/<prefix>HostShim.c`` and ``.h``; a shim header that
   replaces a vendor header keeps the vendor's name, because the product's includes must find it.
+  The fakes of a whole vendor tree sit in one folder of it, ``shim/<vendor>/``, a lowercase word,
+  as headers under the include paths the code names (``shim/zephyr/zephyr/drivers/gpio.h``).
 - ``harness/``: ``__init__.py`` and the packages ``host/`` and ``target/``, nothing else; a module
   is ``<snake_case>.py`` and never ``test_*``, which is a test module's name.
 - ``TESTS_DIRS``: the first level of ``tests/`` - the execution location in a C repository; in a
@@ -66,6 +68,8 @@ TESTS_COMMON = frozenset({"framework", "integration"})
 TESTS_FILES = frozenset({"__init__.py", "conftest.py"})
 
 _TEST_MODULE = re.compile(r"^test_[a-z0-9]+(?:_[a-z0-9]+)*\.py$")
+_VENDOR = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+_INCLUDE_PART = re.compile(r"^[A-Za-z0-9_]+$")
 _MODULE = re.compile(r"^[a-z][a-z0-9_]*\.py$")
 
 
@@ -136,9 +140,26 @@ def _c_file(f: PurePosixPath) -> list[str]:
     if len(f.parts) < 3 or f.parts[1] not in ROLES:
         return [f"{f}: {f.parts[0]}/ holds only {', '.join(sorted(ROLES))}/"]
     role = f.parts[1]
+    if role == "shim" and len(f.parts) > 3:
+        return _vendor_fake(f)
     if len(f.parts) > 3 or not ROLE_FILES[role].match(f.name):
         return [f"{f}: {f.parts[0]}/{role}/ holds only {ROLE_SHAPES[role]}, directly"]
     return []
+
+
+def _vendor_fake(f: PurePosixPath) -> list[str]:
+    """Return the findings for a file of a vendor folder: ``shim/<vendor>/<include path>.h``."""
+    folders = f.parts[3:-1]
+    if (
+        _VENDOR.match(f.parts[2])
+        and f.suffix == ".h"
+        and all(_INCLUDE_PART.match(part) for part in folders)
+    ):
+        return []
+    return [
+        f"{f}: {f.parts[0]}/shim/<vendor>/ is a lowercase word holding the vendor's headers (.h) "
+        "under their include paths"
+    ]
 
 
 def _harness_file(f: PurePosixPath) -> list[str]:
