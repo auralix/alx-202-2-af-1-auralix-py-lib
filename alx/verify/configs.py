@@ -66,7 +66,10 @@ file was reached at all. Only the rows that compile everything count: an assert 
 macro is elided drops its arguments, so its line is not compiled in any sense that matters - the
 top-level ``coverage`` table names, per axis, the words whose rows are measured. A line no row
 covers is reported with the directive that hid it; an ``exempt`` entry (a file pattern, an
-identifier of the hiding directive and the reason) explains it instead. ``report.json`` holds
+identifier of the hiding directive and the reason) explains it instead. A finding the repository
+decided to keep - a frozen line, a message a build prints on purpose - is named by an ``accept``
+entry (a file pattern, a text of the message and the reason): it is reported with its reason and
+fails no row. ``report.json`` holds
 everything and ``report.md`` says it for a person; :mod:`alx.verify.gates.configs` fails on any
 finding, any missing header or identifier, any line no row compiled, and any run that was not the
 whole matrix.
@@ -122,6 +125,7 @@ _WORD = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _ROW_KEYS = ("id", *AXES, "description")
 _PLATFORM_KEYS = ("description", "host", "includes", "defines", "flags")
 _EXEMPT_KEYS = ("file", "guard", "why")
+_ACCEPT_KEYS = ("file", "text", "why")
 _DEFINE = re.compile(r"^(?P<off>\s*//\s*)?#define\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)(?P<rest>.*)$")
 _FRAGMENT_DEFINE = re.compile(r"^#define\s+(?P<name>[A-Za-z_]\w*)(?:\s+(?P<value>.*\S))?\s*$")
 _FRAGMENT_UNDEF = re.compile(r"^#undef\s+(?P<name>[A-Za-z_]\w*)\s*$")
@@ -206,6 +210,19 @@ class Exemption:
 
 
 @dataclass(frozen=True)
+class Acceptance:
+    """A finding kept by decision: a file pattern, a text of the message, the reason."""
+
+    file: str
+    text: str
+    why: str
+
+    def covers(self, file: str, text: str) -> bool:
+        """Return True when this keeps a finding of ``file`` (root-relative) saying ``text``."""
+        return fnmatch.fnmatchcase(file, self.file) and self.text in text
+
+
+@dataclass(frozen=True)
 class MatrixFile:
     """The rows, the platforms and the exemptions of one matrix file, and what holds for all rows.
 
@@ -219,6 +236,7 @@ class MatrixFile:
     defines: tuple[str, ...] = ()
     includes: tuple[Path, ...] = ()
     coverage: Mapping[str, frozenset[str]] = field(default_factory=dict)
+    accepted: tuple[Acceptance, ...] = ()
 
     def measures(self, row: Row) -> bool:
         """Return True when ``row`` counts for coverage: every axis word the table allows."""
@@ -293,7 +311,7 @@ def parse_platform(name: str, raw: object, root: Path) -> Platform:
 def parse_matrix(text: str, root: Path, label: str = "matrix") -> MatrixFile:
     """Return the rows, platforms and exemptions of a matrix file's text."""
     data = tomllib.loads(text)
-    keys = ("defines", "includes", "coverage", "platform", "exempt", "row")
+    keys = ("defines", "includes", "coverage", "platform", "exempt", "accept", "row")
     unknown = [key for key in data if key not in keys]
     if unknown:
         msg = f"{label}: unknown top-level key(s) {', '.join(unknown)}; allowed: {', '.join(keys)}"
@@ -312,6 +330,10 @@ def parse_matrix(text: str, root: Path, label: str = "matrix") -> MatrixFile:
     for n, raw in enumerate(data.get("exempt", []), 1):
         table = _table(raw, f"{label} exempt {n}", _EXEMPT_KEYS, _EXEMPT_KEYS)
         exemptions.append(Exemption(str(table["file"]), str(table["guard"]), str(table["why"])))
+    accepted = []
+    for n, raw in enumerate(data.get("accept", []), 1):
+        table = _table(raw, f"{label} accept {n}", _ACCEPT_KEYS, _ACCEPT_KEYS)
+        accepted.append(Acceptance(str(table["file"]), str(table["text"]), str(table["why"])))
     coverage_raw = data.get("coverage", {})
     if not isinstance(coverage_raw, dict) or any(axis not in AXES for axis in coverage_raw):
         msg = f"{label}: coverage is a table of axes ({', '.join(AXES)}) to lists of words"
@@ -326,6 +348,7 @@ def parse_matrix(text: str, root: Path, label: str = "matrix") -> MatrixFile:
         defines=_strings(data, "defines", label),
         includes=tuple(root / item for item in _strings(data, "includes", label)),
         coverage=coverage,
+        accepted=tuple(accepted),
     )
 
 
@@ -784,6 +807,7 @@ class RowResult:
     missing_headers: list[str] = field(default_factory=list)
     undeclared: list[str] = field(default_factory=list)
     files: int = 0
+    accepted: list[tuple[Finding, str]] = field(default_factory=list)
 
     def as_json(self) -> dict[str, object]:
         """Return the row's record for ``report.json``."""
@@ -799,6 +823,8 @@ class RowResult:
             "findings": [f.render() for f in self.findings[:FINDINGS_KEPT]],
             "missing_headers": list(self.missing_headers),
             "undeclared": list(self.undeclared),
+            "accepted_total": len(self.accepted),
+            "accepted": [f"{f.render()} - {why}" for f, why in self.accepted[:FINDINGS_KEPT]],
         }
 
 
@@ -1015,11 +1041,18 @@ def run_matrix(
     lacking: dict[str, dict[str, None]] = {row.name: {} for row in rows}
     cache: dict[str, str | None] = {}
     root = matrix.root.resolve()
+    accepts = matrix.matrix.accepted
     with ThreadPoolExecutor(max_workers=workers or os.cpu_count()) as pool:
         for job, (findings, missing, lines) in zip(
             jobs, pool.map(lambda j: _execute(j, runner), jobs), strict=True
         ):
-            results[job.row.name].findings.extend(findings)
+            for finding in findings:
+                where = _key(root, finding.file, cache) or ""
+                why = next((a.why for a in accepts if a.covers(where, finding.text)), None)
+                if why is None:
+                    results[job.row.name].findings.append(finding)
+                else:
+                    results[job.row.name].accepted.append((finding, why))
             lacking[job.row.name].update(dict.fromkeys(missing))
             for file, numbers in lines.items():
                 key = _key(root, file, cache)
@@ -1100,6 +1133,9 @@ def render_markdown(report: Mapping[str, Any]) -> str:
     lines += _gap_lines(report["uncovered"]) or ["none"]
     lines += ["", "## Lines explained by an exemption", ""]
     lines += _gap_lines(report["exempted"]) or ["none"]
+    kept = dict.fromkeys(line for r in report["rows"] for line in r["accepted"])
+    lines += ["", "## Findings kept by decision", ""]
+    lines += [f"- {line}" for line in kept] or ["none"]
     return "\n".join(lines) + "\n"
 
 

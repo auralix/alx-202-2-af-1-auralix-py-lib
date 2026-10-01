@@ -37,6 +37,8 @@ Proofs (ALX-1564):
   P370 a repository's further configuration headers are written into every row's folder, each
        with the row's operations on the names it declares; the base takes the rest, an
        undeclared name an error there or, asked for, appended
+  P371 a finding an accept entry names by file pattern and text is reported with its reason and
+       fails no row; another text, another file or a file outside the root is a finding still
 """
 
 import json
@@ -709,3 +711,44 @@ def test_ALX1564_P370_further_headers_take_the_names_they_declare_and_the_base_t
     )
     assert "#define PROD_TEST\n" in (folder / "prod.h").read_text(encoding="utf-8")
     assert "PROD_TEST" not in (folder / "cfg.h").read_text(encoding="utf-8")
+
+
+def test_ALX1564_P371_an_accepted_finding_is_reported_with_its_reason_and_fails_no_row(
+    repo, tmp_path
+):
+    text = (repo / "matrix.toml").read_text(encoding="ascii")
+    accept = '[[accept]]\nfile = "lib/*.c"\ntext = "unused variable"\nwhy = "kept by decision"\n\n'
+    _write(repo / "matrix.toml", text.replace("[[row]]", accept + "[[row]]", 1))
+    kept = cf.load_matrix(repo / "matrix.toml", repo)
+    assert kept.accepted == (cf.Acceptance("lib/*.c", "unused variable", "kept by decision"),)
+    assert kept.accepted[0].covers("lib/a.c", "warning: unused variable 'x'")
+    assert not kept.accepted[0].covers("inc/a.c", "warning: unused variable 'x'")
+    assert not kept.accepted[0].covers("lib/a.c", "warning: unused function 'f'")
+    with pytest.raises(MatrixError, match="accept 1: missing why"):
+        cf.parse_matrix('[[accept]]\nfile = "x"\ntext = "y"\n', repo)
+    scripted = ScriptedCompiler(repo)
+    plain = _matrix(repo, sources=[repo / "lib" / "a.c"], matrix=kept)
+
+    def outside(argv, env=None):
+        done = scripted(argv, env)
+        if "-fsyntax-only" in argv and "0003" in " ".join(argv):
+            err = done.stderr + "X:/elsewhere/b.c:1:1: warning: unused variable 'z'\n"
+            return subprocess.CompletedProcess(argv, 1, "", err)
+        return done
+
+    report = cf.run_matrix(plain, tmp_path / "kept", runner=outside)
+    elided = report["rows"][2]  # the elided row's warning in a.c is kept; the one outside is not
+    assert elided["status"] == "FAIL"
+    assert elided["findings"] == ["X:/elsewhere/b.c:1:1: warning: unused variable 'z'"]
+    assert elided["accepted_total"] == 1
+    assert elided["accepted"] == [
+        f"{repo / 'lib' / 'a.c'}:7:9: warning: unused variable 'x' [-Wunused-variable] - kept by decision"
+    ]
+    md = (tmp_path / "kept" / "report.md").read_text(encoding="utf-8")
+    assert "## Findings kept by decision\n\n- " in md
+    assert md.endswith("unused variable 'x' [-Wunused-variable] - kept by decision\n")
+    clean = cf.run_matrix(_matrix(repo, sources=[repo / "lib" / "a.c"]), tmp_path / "clean",
+                          runner=scripted, only=["0001"])  # fmt: skip
+    assert clean["rows"][0]["accepted_total"] == 0
+    md = (tmp_path / "clean" / "report.md").read_text(encoding="utf-8")
+    assert md.endswith("## Findings kept by decision\n\nnone\n")
