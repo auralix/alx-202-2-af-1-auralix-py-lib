@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""C style gate: two mechanical rules a compiler cannot state, checked on the given C sources.
+"""C style gate: three mechanical rules a compiler cannot state, checked on the given C sources.
 
 Rule 1, NO TERNARY OPERATOR. Outside comments, strings and character literals, ``?`` has exactly
 one meaning in C: the conditional operator. It hides a branch inside an expression, where a reader
@@ -11,7 +11,13 @@ name/value starts in the same column within the block, and every description sta
 column within the block. ``@brief``, ``@note``, ``@return`` and ``@details`` carry a description
 only; ``@param`` and ``@retval`` carry a name and then a description.
 
-Both rules are checked by scanning, not by parsing: no compiler, no include path, no build. Usage::
+Rule 3, THE COMPILER'S OWN SPELLING IN ONE FILE (decision 12). ``__attribute__`` and the CMSIS
+shorthands ``__PACKED``, ``__ALIGNED``, ``__WEAK`` and ``__USED`` appear only in the repository's
+``<prefix>Global.h`` (``alxGlobal.h``), which names them ``ALX_PACKED``, ``ALX_SECTION(name)`` and
+the rest; every other file, tests and generators included, uses those names. A ``#define`` of a
+shorthand - a fake of the vendor header that provides it - is not a use.
+
+All three are checked by scanning, not by parsing: no compiler, no include path, no build. Usage::
 
     python -m alx.verify.gates.c_style <file> [<file> ...] [--out report.txt]
 
@@ -34,9 +40,58 @@ DESC_ONLY_TAGS = frozenset({"brief", "note", "return", "details"})
 NAMED_TAGS = frozenset({"param", "retval"})
 
 _TAG = re.compile(r"^(\s*\*\s*)(@\w+(?:\[[^\]]*\])?)(.*)$")
+_RAW_SPELLING = re.compile(r"\b(__attribute__|__PACKED|__ALIGNED|__WEAK|__USED)\b")
+_GLOBAL_HEADER = re.compile(r"[A-Za-z]+Global\.h")
 
 # The scanner states of rule 1: plain code, // to end of line, /* */, "..." and '...'.
 _CODE, _LINE_COMMENT, _BLOCK_COMMENT, _STRING, _CHAR = range(5)
+
+
+def code_spans(text: str) -> list[tuple[int, int]]:
+    """Return the (start, end) index spans of ``text`` that are code: comments and literals out."""
+    spans: list[tuple[int, int]] = []
+    state, start, escape = _CODE, 0, False
+    i, size = 0, len(text)
+    while i < size:
+        char = text[i]
+        nxt = text[i + 1] if i + 1 < size else ""
+        if state == _CODE:
+            if char == "/" and nxt in "/*" and nxt:
+                spans.append((start, i))
+                state, i = (_LINE_COMMENT if nxt == "/" else _BLOCK_COMMENT), i + 1
+            elif char in "\"'":
+                spans.append((start, i))
+                state = _STRING if char == '"' else _CHAR
+        elif state == _LINE_COMMENT and char == "\n":
+            state, start = _CODE, i
+        elif state == _BLOCK_COMMENT and char == "*" and nxt == "/":
+            state, start, i = _CODE, i + 2, i + 1
+        elif state in (_STRING, _CHAR):
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif (state == _STRING and char == '"') or (state == _CHAR and char == "'"):
+                state, start = _CODE, i + 1
+        i += 1
+    if state == _CODE:
+        spans.append((start, size))
+    return spans
+
+
+def find_raw_spellings(path: str, text: str) -> list[tuple[int, str]]:
+    """Return (line, word) for every raw compiler spelling outside ``<prefix>Global.h`` (rule 3)."""
+    if _GLOBAL_HEADER.fullmatch(Path(path).name):
+        return []
+    hits: list[tuple[int, str]] = []
+    for start, end in code_spans(text):
+        for match in _RAW_SPELLING.finditer(text, start, end):
+            line_start = text.rfind("\n", 0, match.start()) + 1
+            before = text[line_start : match.start()].split()
+            if before[-1:] == ["#define"] or before[-2:] == ["#", "define"]:
+                continue  # a fake of the vendor header defining the shorthand
+            hits.append((text.count("\n", 0, match.start()) + 1, match.group(1)))
+    return hits
 
 
 def find_ternaries(text: str) -> list[int]:
@@ -152,8 +207,12 @@ def _doc_block(path: str, lines: list[str], start: int) -> tuple[int, list[str]]
 
 
 def check_text(path: str, text: str) -> list[str]:
-    """Return every finding in one already-read source: the ternaries first, then the doc blocks."""
+    """Return every finding in one already-read source: ternaries, raw spellings, doc blocks."""
     findings = [f"{path}:{line}: ternary operator (write if/else)" for line in find_ternaries(text)]
+    findings += [
+        f"{path}:{line}: {word} outside the Global header (use its ALX_ name)"
+        for line, word in find_raw_spellings(path, text)
+    ]
     lines = text.splitlines()
     i = 0
     while i < len(lines):

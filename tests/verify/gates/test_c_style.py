@@ -18,6 +18,11 @@ Proofs (ALX-1544):
   P184 mutation-driven hardening: the escape flag RESETS, so a literal containing an escape still ends and code
        after it is code again - P152 only asserted that nothing was found, which stays true when the scanner
        never leaves the string
+
+Proofs (ALX-1564):
+  P682 a raw compiler spelling - __attribute__, __PACKED, __ALIGNED, __WEAK, __USED - outside the
+       Global header is a finding naming it; in a comment or a string it is not
+  P683 the Global header spells them; a fake's #define of a shorthand is no use of it
 """
 
 from alx.verify.gates import c_style
@@ -186,3 +191,34 @@ def test_ALX1544_P184_an_escaped_character_does_not_swallow_the_rest_of_the_file
 
     # and the negative still holds: the escaped quote does not end the literal early
     assert c_style.find_ternaries('const char* s = "why\\" ? no";\nint a = 1;\n') == []
+
+
+def test_ALX1564_P682_a_raw_compiler_spelling_outside_the_global_header_is_a_finding():
+    source = (
+        "typedef struct __attribute__((packed)) { uint8_t a; } AlxX;\n"
+        "__WEAK void AlxX_Callback(void);\n"
+        "static const uint8_t boot[4] __USED = {0};\n"
+        "// __attribute__ in a comment is prose\n"
+        'const char* s = "__PACKED";\n'
+        "typedef struct ALX_PACKED { uint8_t b; } AlxY;\n"
+        'const char* t = "a\\"__WEAK";\n'
+        "__USED void AlxX_Late(void);\n"
+    )
+    found = c_style.check_text("Ext/alxX.h", source)
+    assert found == [
+        "Ext/alxX.h:1: __attribute__ outside the Global header (use its ALX_ name)",
+        "Ext/alxX.h:2: __WEAK outside the Global header (use its ALX_ name)",
+        "Ext/alxX.h:3: __USED outside the Global header (use its ALX_ name)",
+        "Ext/alxX.h:8: __USED outside the Global header (use its ALX_ name)",
+    ], "an escaped quote does not end the literal, the real quote does"
+
+
+def test_ALX1564_P683_the_global_header_and_a_fake_defining_a_shorthand_are_not_findings():
+    spelled = "#define ALX_PACKED __attribute__((packed))\n#define ALX_WEAK __WEAK\n"
+    assert c_style.check_text("alxGlobal.h", spelled) == [], "the one file that spells them"
+    assert c_style.check_text("Usr/fooGlobal.h", spelled) == [], "any repository's Global header"
+    fake = "#define __WEAK\n#define __USED\n#  define __PACKED __attribute__((packed))\n"
+    found = c_style.check_text("Test/host/shim/core_cm7.h", fake)
+    assert found == [
+        "Test/host/shim/core_cm7.h:3: __attribute__ outside the Global header (use its ALX_ name)"
+    ], "defining a shorthand is no use of it; what the definition expands to is"
