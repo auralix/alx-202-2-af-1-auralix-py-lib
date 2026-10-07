@@ -5,9 +5,12 @@ The C in these tests is written as text, never compiled: the gate scans, so a fr
 
 Proofs (ALX-1564):
   P671 the table's own forms pass: PRI macros spliced into the text, uppercase PRIX hex with its
-       width, %d %c %s %p %f %%, the flags - and 0, width digits and .precision, %.*s
+       width, %d %c %s %p %f %%, the flags - and 0, width digits and .precision, %.*s with (int)len
+       on the call - found by counting the values, a * taking one more; a value the call does not
+       have is the compiler's business
   P672 every conversion outside the table is a finding naming it: %u %x %X %o %i %e %g %a %n, a
-       length modifier, the # flag, a * width, a * precision on anything but s
+       length modifier, the # flag, a * width, a * precision on anything but s, a %.*s whose length
+       is not (int) on the call
   P673 in sscanf only SCN macros, %lf and a bounded %s; outside sscanf no SCN macro
   P674 a lowercase PRIx and PRIo are findings; a format that is not a literal is not checked
   P675 the calls are found wherever they stand - a module trace macro, AlxTrace_WriteFormat,
@@ -32,9 +35,11 @@ def test_ALX1564_P671_the_tables_own_forms_pass(tmp_path):
         '\tALX_FIFO_TRACE_ERR("%d %c %s %p %f %% done", status, c, str, ptr, value);\n'
         '\tsprintf(buff, "%-8s|%08" PRIX32 "|%.3f|%5d", name, addr, value, n);\n'
         '\tsnprintf(buff, len, "buff %.*s", (int)len, data);\n'
+        '\tsprintf(buff, "%" PRIu32 " %.*s", a, (int)len, data);\n'
         "}\n"
     )
     assert _findings(tmp_path, source) == []
+    assert c_format.check_format(['"%.*s'], "sprintf") == [], "no value to read: the compiler's"
 
 
 def test_ALX1564_P672_a_conversion_outside_the_table_is_a_finding(tmp_path):
@@ -44,6 +49,7 @@ def test_ALX1564_P672_a_conversion_outside_the_table_is_a_finding(tmp_path):
         '\tALX_X_TRACE_INF("%lu %hhd %zd", a, b, c);\n'
         '\tALX_X_TRACE_INF("%#x %*d %.*d % d %+d", a, w, b, p, c, d, e);\n'
         '\tALX_X_TRACE_INF("done 50%");\n'
+        '\tsnprintf(b, n, "%" PRIu32 " %*d %.*s", a, w, d, len, s);\n'
         "}\n"
     )
     found = _findings(tmp_path, source)
@@ -57,6 +63,11 @@ def test_ALX1564_P672_a_conversion_outside_the_table_is_a_finding(tmp_path):
     assert any("'% d'" in f and "flags" in f for f in found)
     assert any("'%+d'" in f and "flags" in f for f in found)
     assert any(":6: " in f and "'%': a % with no conversion" in f for f in found)
+    assert [f.split(": ", 2)[2] for f in found if ":7: " in f] == [
+        "'%*d': a * width",
+        "'%.*s': its length is (int)len on the call",
+    ], "the length is the fourth value: one for the macro, two for %*d"
+    assert not any("'%.*d'" in f and "(int)len" in f for f in found), "found once, as a * precision"
     assert all(f.startswith(str(tmp_path / "alxX.c")) for f in found)
 
 

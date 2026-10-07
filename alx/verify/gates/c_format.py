@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Sequence
 
 CALL = re.compile(
     r"\b(?P<name>[A-Z][A-Z0-9]*_[A-Z0-9_]*TRACE[A-Z0-9_]*|AlxTrace_WriteFormat|sprintf|snprintf"
@@ -127,10 +127,16 @@ def format_pieces(arg: str) -> list[str] | None:
     return pieces if any(p.startswith('"') for p in pieces) else None
 
 
-def check_format(pieces: list[str], call: str) -> list[str]:
-    """Return what is wrong with one format, one line of text per finding."""
+def check_format(pieces: list[str], call: str, values: Sequence[str] = ()) -> list[str]:
+    """Return what is wrong with one format, one line of text per finding.
+
+    ``values`` are the call's arguments after the format: the length of a ``%.*s`` is read there,
+    and it is ``(int)len`` on the call. A print's every conversion takes one value and a ``*`` one
+    more before it; a value the call does not have is the compiler's business.
+    """
     scanf = call == "sscanf"
     found: list[str] = []
+    used = 0
     for n, piece in enumerate(pieces):
         if not piece.startswith('"'):
             if not ALLOWED_MACRO.fullmatch(piece):
@@ -138,8 +144,18 @@ def check_format(pieces: list[str], call: str) -> list[str]:
             continue
         text = piece[1:]
         for conv in CONVERSION.finditer(text):
-            if conv.group(0) != "%%":
-                found += _check_conversion(conv, text, pieces, n, scanf=scanf)
+            if conv.group(0) == "%%":
+                continue
+            found += _check_conversion(conv, text, pieces, n, scanf=scanf)
+            if scanf:
+                continue
+            used += conv.group("width") == "*"
+            if conv.group("prec") == "*":
+                length = values[used] if used < len(values) else "(int)"
+                if conv.group("conv") == "s" and not length.startswith("(int)"):
+                    found.append(f"{conv.group(0)!r}: its length is (int)len on the call")
+                used += 1
+            used += 1
     return found
 
 
@@ -189,11 +205,13 @@ def scan(path: Path, exempt: Iterable[str] = ()) -> list[str]:
         if f"{path.name}:{name}" in exempt:
             continue
         args, _ = arguments(text, m.end() - 1)
-        pieces = next((p for p in (format_pieces(a) for a in args) if p is not None), None)
+        formats = ((k, format_pieces(a)) for k, a in enumerate(args))
+        k, pieces = next(((k, p) for k, p in formats if p is not None), (0, None))
         if pieces is None:
             continue
         line = text.count("\n", 0, m.start()) + 1
-        findings += [f"{path}:{line}: {name}: {what}" for what in check_format(pieces, name)]
+        what = check_format(pieces, name, args[k + 1 :])
+        findings += [f"{path}:{line}: {name}: {w}" for w in what]
     return findings
 
 
