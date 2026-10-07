@@ -3,7 +3,8 @@
 
 A C repository tests its modules on the host: the real sources are compiled into one DLL per test
 group and driven from pytest through ctypes. The mechanics of that build are the same everywhere -
-find the toolchain, rebuild only when something is newer, write a compile database, compile the
+find the toolchain, rebuild only when a file the last build read is newer, write a compile
+database, compile the
 closure with warnings off and the gated sources with the full warning set, link with an export
 list, and do it again with the sanitizer or coverage flags. Only the lists differ per repository:
 which sources, which defines, which ``.def`` file. This module holds the mechanics.
@@ -12,7 +13,7 @@ which sources, which defines, which ``.def`` file. This module holds the mechani
 
     tc = hb.Toolchain()
     EXPORTS = hb.Exports("alxFifoTest", ("AlxFifo_Read", "AlxFifo_Write"))
-    if hb.needs_build(dll, deps):
+    if hb.needs_build(dll, [*STRICT, *CLOSURE]):
         hb.build_dll(tc, out=dll, strict=STRICT, closure=CLOSURE, includes=INC,
                      defines=ASSERTS, def_file=hb.write_def_file(build, EXPORTS),
                      flags=["-O0", "-g"], warnings=[*hb.WARNINGS, "-Werror"],
@@ -33,6 +34,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -77,6 +79,9 @@ PROFILE: tuple[str, ...] = ("-fprofile-instr-generate", "-fcoverage-mapping")
 
 CRT_DEFINE = "-D_CRT_SECURE_NO_WARNINGS"
 """The MSVC CRT deprecation noise, off in every host build: the target has no MSVC CRT."""
+
+DEPENDENCY_TARGET = "dep"
+"""The rule name on each line of a dependency file (``-MT``); the files it lists are what count."""
 
 
 class Exports(NamedTuple):
@@ -234,12 +239,49 @@ def _vcvars_variables(bat: Path) -> dict[str, str]:
     return values
 
 
-def needs_build(target: Path, deps: Iterable[Path]) -> bool:
-    """Whether ``target`` must be rebuilt: it is missing, or a dependency is newer or gone."""
+def dependency_file(target: Path) -> Path:
+    """Where the build of ``target`` records the files it read: ``<target>.d`` beside it."""
+    return target.with_name(target.name + ".d")
+
+
+def read_dependencies(path: Path) -> list[Path]:
+    """Return every file a dependency file lists, in the make syntax clang writes with ``-MM``.
+
+    One rule per source, ``dep: <source> <header> ...``, continued over lines with a backslash; a
+    space inside a name is escaped with a backslash. A relative name is relative to the file's
+    folder, where the scan ran.
+    """
+    text = path.read_text(encoding="utf-8", errors="replace")
+    text = text.replace("\\\r\n", " ").replace("\\\n", " ")
+    files: list[Path] = []
+    for line in text.splitlines():
+        _, sep, rest = line.partition(":")
+        if not sep:
+            continue
+        for token in re.split(r"(?<!\\)\s+", rest.strip()):
+            if token:
+                name = Path(token.replace("\\ ", " "))
+                files.append(name if name.is_absolute() else path.parent / name)
+    return list(dict.fromkeys(files))
+
+
+def needs_build(target: Path, deps: Iterable[Path] = ()) -> bool:
+    """Whether ``target`` must be rebuilt.
+
+    It must when it is missing, when its dependency file is missing, or when a file it was built
+    from is newer or gone: every file the compiler listed in the dependency file - each source
+    and every header it reaches, however indirectly - and every file the caller names in
+    ``deps`` (its source list, so that a source added to a group rebuilds it). A hand-written list
+    of headers is no longer needed: one that missed ``alxTrace.h`` once let two lane runs pass
+    on a stale DLL (A75).
+    """
     if not target.exists():
         return True
+    record = dependency_file(target)
+    if not record.exists():
+        return True
     stamp = target.stat().st_mtime
-    for dep in deps:
+    for dep in [*read_dependencies(record), *deps]:
         try:
             if dep.stat().st_mtime > stamp:
                 return True
@@ -293,6 +335,34 @@ def compile_argv(
         *defines,
         *_include_flags(driver, includes),
         "-c" if driver == GNU else "/c",
+        *[str(s) for s in sources],
+    ]
+
+
+def dependency_argv(
+    compiler: Path | str,
+    sources: Iterable[Path | str],
+    *,
+    std: str = "gnu99",
+    includes: Iterable[Path | str] = (),
+    defines: Iterable[str] = (),
+) -> list[str]:
+    """Return the argv that lists the files the sources read: the preprocessor alone, ``-MM``.
+
+    Always the GNU driver, whichever driver built: clang-cl takes ``-MM`` only through
+    ``/clang:``, and the files a source reads do not depend on the driver. ``-MM`` leaves out the
+    system headers; every ``-I`` folder, the vendor shims among them, is listed.
+    """
+    return [
+        str(compiler),
+        f"-std={std}",
+        "-w",
+        CRT_DEFINE,
+        *defines,
+        *_include_flags(GNU, includes),
+        "-MM",
+        "-MT",
+        DEPENDENCY_TARGET,
         *[str(s) for s in sources],
     ]
 
@@ -393,6 +463,32 @@ def _step(what: str, argv: Sequence[str], cwd: Path | None, env: Mapping[str, st
         raise BuildError(msg)
 
 
+def _record_dependencies(
+    toolchain: Toolchain,
+    out: Path,
+    sources: Iterable[Path],
+    *,
+    std: str,
+    includes: Iterable[Path | str],
+    defines: Iterable[str],
+    env: Mapping[str, str],
+) -> None:
+    """Write ``out``'s dependency file after a good build; a failed scan leaves none.
+
+    Without the file the next :func:`needs_build` rebuilds, so a scan that fails costs a rebuild
+    and never a stale target. The build itself has already passed and stands.
+    """
+    argv = dependency_argv(
+        toolchain.compiler(GNU), sources, std=std, includes=includes, defines=defines
+    )
+    result = run(argv, cwd=out.parent, env=env)
+    record = dependency_file(out)
+    if result.returncode != 0:
+        record.unlink(missing_ok=True)
+        return
+    record.write_text(result.stdout, encoding="utf-8")
+
+
 def build_dll(
     toolchain: Toolchain,
     *,
@@ -420,6 +516,9 @@ def build_dll(
     Only the objects of the listed closure sources are linked. An object left in the folder by a
     source that has since left the list is stale, and linking it would keep a removed definition
     alive until someone deleted the folder.
+
+    Last, the files the build read are recorded beside ``out`` (:func:`dependency_file`), for
+    :func:`needs_build`.
     """
     out.parent.mkdir(parents=True, exist_ok=True)
     env = toolchain.environment()
@@ -462,6 +561,9 @@ def build_dll(
         None,
         env,
     )
+    _record_dependencies(
+        toolchain, out, [*strict, *closure], std=std, includes=includes, defines=defines, env=env
+    )
     return out
 
 
@@ -477,8 +579,13 @@ def build_exe(
     driver: str = MSVC,
     std: str = "gnu99",
 ) -> Path:
-    """Build an executable (an ASan smoke needs one: the address sanitizer cannot live in a DLL)."""
+    """Build an executable (an ASan smoke needs one: the address sanitizer cannot live in a DLL).
+
+    The files it read are recorded beside it, as :func:`build_dll` records them.
+    """
     out.parent.mkdir(parents=True, exist_ok=True)
+    sources = list(sources)
+    env = toolchain.environment()
     argv = link_argv(
         toolchain.compiler(driver),
         out,
@@ -491,7 +598,10 @@ def build_exe(
         warnings=warnings,
     )
     argv = [a for a in argv if a not in ("/LD", "-shared")]
-    _step(f"{out.name} build", argv, None, toolchain.environment())
+    _step(f"{out.name} build", argv, None, env)
+    _record_dependencies(
+        toolchain, out, sources, std=std, includes=includes, defines=defines, env=env
+    )
     return out
 
 

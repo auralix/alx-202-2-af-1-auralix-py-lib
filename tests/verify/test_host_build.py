@@ -23,11 +23,21 @@ Proofs (ALX-1564):
   P305 only the listed closure sources are linked; a stale object in the folder is not
   P319 an export list becomes a .def file: the library line, then one tab-indented line each
   P320 the .def file is rewritten only when its text changes, and its folder is made if missing
+  P665 build_dll and build_exe end with a dependency scan: the GNU preprocessor in -MM mode over
+       every source, with the build's defines and includes, run beside the output and written to
+       <out>.d
+  P666 a header only the dependency file names rebuilds the target when it is newer or gone (A75:
+       a hand-written list that missed alxTrace.h let two lane runs pass on a stale DLL)
+  P667 a target without its dependency file is rebuilt, whatever the caller's list says
+  P668 the dependency file is read in clang's make syntax: continued lines, several rules, an
+       escaped space, absolute names, relative names against the file's folder
+  P669 a failed dependency scan leaves no dependency file, and the build that passed stands
 """
 
 import json
 import os
 import subprocess
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -139,6 +149,7 @@ def test_ALX1544_P162_needs_build_sees_a_missing_target_a_newer_or_a_vanished_de
     assert hb.needs_build(target, [dep]) is True, "no target yet"
 
     target.write_text("dll", encoding="ascii")
+    hb.dependency_file(target).write_text("dep: src.c\n", encoding="utf-8")
     stamp = target.stat().st_mtime
     os.utime(dep, (stamp - 10, stamp - 10))
     assert hb.needs_build(target, [dep]) is False, "everything older than the target"
@@ -176,7 +187,7 @@ def test_ALX1544_P164_build_dll_one_step_links_the_gated_sources(tmp_path, toolc
         driver=hb.MSVC,
     )
     assert result == dll
-    assert len(compiler.calls) == 1, "one step, no closure"
+    assert len(compiler.calls) == 2, "one build step, no closure, then the dependency scan"
     call = compiler.calls[0]
     assert call["cwd"] is None
     assert call["env"] == {"INCLUDE": "somewhere"}
@@ -200,8 +211,8 @@ def test_ALX1544_P165_build_dll_two_steps_compiles_the_closure_then_links_it(
         defines=["-DASSERTS_ON"],
         driver=hb.MSVC,
     )
-    assert len(fake.calls) == 2
-    first, second = fake.calls
+    assert len(fake.calls) == 3, "closure, link, dependency scan"
+    first, second, _scan = fake.calls
     assert "/c" in first["argv"], "step 1 compiles only"
     assert "/w" in first["argv"], "step 1 has warnings off"
     assert first["cwd"] == dll.with_suffix(".closure"), "the default object folder"
@@ -230,6 +241,124 @@ def test_ALX1564_P305_a_stale_object_in_the_closure_folder_is_not_linked(
     link = fake.calls[1]["argv"]
     assert str(objs / "param.obj") in link, "the listed source is linked"
     assert str(objs / "removed.obj") not in link, "a source that left the list is not"
+
+
+class ScanningCompiler(FakeCompiler):
+    """A FakeCompiler whose -MM call answers with a dependency listing on stdout."""
+
+    def __init__(self, listing, **kw):
+        super().__init__(**kw)
+        self.listing = listing
+
+    def __call__(self, argv, **kw):
+        result = super().__call__(argv, **kw)
+        if "-MM" in argv:
+            result.stdout = self.listing
+        return result
+
+
+def test_ALX1564_P665_build_dll_and_build_exe_end_with_a_dependency_scan(
+    tmp_path, toolchain, monkeypatch
+):
+    listing = "dep: cli.c alxCli.h \\\n  alxTrace.h\n"
+    fake = ScanningCompiler(listing, make=["param.obj"])
+    monkeypatch.setattr(hb, "run", lambda argv, cwd=None, env=None: fake(argv, cwd=cwd, env=env))
+    dll = tmp_path / "out" / "cli.dll"
+    hb.build_dll(
+        toolchain,
+        out=dll,
+        strict=[tmp_path / "cli.c"],
+        closure=[tmp_path / "param.c"],
+        includes=[tmp_path / "inc"],
+        defines=["-DASSERTS_ON"],
+        driver=hb.MSVC,
+    )
+    scan = fake.calls[-1]
+    argv = scan["argv"]
+    assert argv[0] == str(toolchain.compiler(hb.GNU)), "the GNU driver, whichever driver built"
+    assert "-MM" in argv
+    assert argv[argv.index("-MT") + 1] == hb.DEPENDENCY_TARGET
+    assert str(tmp_path / "cli.c") in argv, "the gated source"
+    assert str(tmp_path / "param.c") in argv, "and the closure source"
+    assert "-DASSERTS_ON" in argv, "the build's own defines"
+    assert f"-I{tmp_path / 'inc'}" in argv, "and its includes"
+    assert scan["cwd"] == dll.parent, "run beside the DLL, where relative names resolve"
+    assert hb.dependency_file(dll) == dll.with_name("cli.dll.d")
+    assert hb.dependency_file(dll).read_text(encoding="utf-8") == listing
+
+    exe = tmp_path / "smoke.exe"
+    hb.build_exe(toolchain, out=exe, sources=[tmp_path / "smoke.c"], driver=hb.MSVC)
+    assert "-MM" in fake.calls[-1]["argv"], "an executable is scanned as well"
+    assert hb.dependency_file(exe).read_text(encoding="utf-8") == listing
+
+
+def test_ALX1564_P666_a_header_only_the_dependency_file_names_rebuilds_the_target(tmp_path):
+    src = tmp_path / "alxLin.c"
+    hdr = tmp_path / "alxTrace.h"
+    for f in (src, hdr):
+        f.write_text("x", encoding="ascii")
+    target = tmp_path / "alxLinTest.dll"
+    target.write_text("dll", encoding="ascii")
+    hb.dependency_file(target).write_text("dep: alxLin.c \\\n alxTrace.h\n", encoding="utf-8")
+    stamp = target.stat().st_mtime
+    for f in (src, hdr):
+        os.utime(f, (stamp - 10, stamp - 10))
+    assert hb.needs_build(target, [src]) is False, "nothing newer than the target"
+
+    os.utime(hdr, (stamp + 10, stamp + 10))
+    assert hb.needs_build(target, [src]) is True, (
+        "the caller never named alxTrace.h; the compiler did"
+    )
+
+    hdr.unlink()
+    assert hb.needs_build(target, [src]) is True, "a header that is gone"
+
+
+def test_ALX1564_P667_a_target_without_its_dependency_file_is_rebuilt(tmp_path):
+    src = tmp_path / "a.c"
+    src.write_text("x", encoding="ascii")
+    target = tmp_path / "a.dll"
+    target.write_text("dll", encoding="ascii")
+    stamp = target.stat().st_mtime
+    os.utime(src, (stamp - 10, stamp - 10))
+    assert hb.needs_build(target, [src]) is True, "no record of what it read: build it and record"
+    assert hb.needs_build(target) is True, "the caller's list is optional"
+
+
+def test_ALX1564_P668_the_dependency_file_is_read_in_clangs_make_syntax(tmp_path):
+    a = tmp_path / "src" / "a.c"
+    c = tmp_path / "src" / "c.c"
+    glob = tmp_path / "inc" / "alxGlobal.h"
+    record = tmp_path / "x.dll.d"
+    record.write_text(
+        f"dep: {a.as_posix()} {glob.as_posix()} \\\n"
+        "  sub/b.h with\\ space.h\n"
+        f"dep: {c.as_posix()} {glob.as_posix()}\n"
+        "\n"
+        "a line that is no rule\n"
+        "dep:\n",
+        encoding="utf-8",
+    )
+    assert hb.read_dependencies(record) == [
+        Path(a.as_posix()),
+        Path(glob.as_posix()),
+        tmp_path / "sub" / "b.h",
+        tmp_path / "with space.h",
+        Path(c.as_posix()),
+    ], "every file once, in order; relative names against the file's folder"
+
+
+def test_ALX1564_P669_a_failed_dependency_scan_leaves_no_dependency_file(
+    tmp_path, toolchain, monkeypatch
+):
+    fake = FakeCompiler(fail_on="-MM")
+    monkeypatch.setattr(hb, "run", lambda argv, cwd=None, env=None: fake(argv, cwd=cwd, env=env))
+    dll = tmp_path / "fifo.dll"
+    hb.dependency_file(dll).write_text("dep: old.c\n", encoding="utf-8")  # an earlier build's
+    assert hb.build_dll(toolchain, out=dll, strict=[tmp_path / "fifo.c"], driver=hb.GNU) == dll, (
+        "no BuildError: the build itself passed"
+    )
+    assert not hb.dependency_file(dll).exists(), "no record, so the next needs_build rebuilds"
 
 
 def test_ALX1564_P319_an_export_list_becomes_a_def_file(tmp_path):

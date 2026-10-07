@@ -168,6 +168,7 @@ def test_ALX1544_P180_rebuild_builds_only_stale_targets_and_names_a_failure(tmp_
     dep = tmp_path / "dep.c"
     dep.write_text("int a;", encoding="ascii")
     current.write_text("dll", encoding="ascii")
+    host_build.dependency_file(current).write_text("dep: dep.c\n", encoding="utf-8")  # A75
     stamp = current.stat().st_mtime
     os.utime(dep, (stamp - 10, stamp - 10))
     missing = tmp_path / "missing.dll"
