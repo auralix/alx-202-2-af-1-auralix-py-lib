@@ -23,6 +23,7 @@ Proofs (ALX-1564):
   P682 a raw compiler spelling - __attribute__, __PACKED, __ALIGNED, __WEAK, __USED - outside the
        Global header is a finding naming it; in a comment or a string it is not
   P683 the Global header spells them; a fake's #define of a shorthand is no use of it
+  P696 a ternary inside a #define body, continuation lines included, is no finding of rule 1
 """
 
 from alx.verify.gates import c_style
@@ -222,3 +223,26 @@ def test_ALX1564_P683_the_global_header_and_a_fake_defining_a_shorthand_are_not_
     assert found == [
         "Test/host/shim/core_cm7.h:3: __attribute__ outside the Global header (use its ALX_ name)"
     ], "defining a shorthand is no use of it; what the definition expands to is"
+
+
+def test_ALX1564_P696_a_ternary_in_a_define_body_is_no_finding():
+    text = (
+        "#define ALX_DAYS(yr) ((((yr) % 4) == 0) ? 366 : 365)\n"
+        "#  define WIDE(a) \\\n"
+        "\t((a) ? 1 : \\\n"
+        "\t 0)\n"
+        "int x = y ? 1 : 0;\n"
+        "#define PLAIN 1\n"
+        "int z = y ? 2 : 3;\n"
+        "#if defined(A) \\\n"
+        "\t&& defined(B)\n"
+        "int w = y ? 4 : 5;\n"
+        "#define CRLF(a) \\\r\n"
+        "\t((a) ? 6 : 7)\r\n"
+    )
+    assert c_style.define_lines(text) == {1, 2, 3, 4, 6, 11, 12}
+    assert c_style.check_text("x.h", text) == [
+        "x.h:5: ternary operator (write if/else)",
+        "x.h:7: ternary operator (write if/else)",
+        "x.h:10: ternary operator (write if/else)",
+    ], "the body of a macro, continuation lines included, and nothing after it"

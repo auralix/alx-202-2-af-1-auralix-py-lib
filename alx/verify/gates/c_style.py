@@ -3,7 +3,9 @@
 
 Rule 1, NO TERNARY OPERATOR. Outside comments, strings and character literals, ``?`` has exactly
 one meaning in C: the conditional operator. It hides a branch inside an expression, where a reader
-skims and a coverage report cannot point at the arm that never ran. Write ``if`` / ``else``.
+skims and a coverage report cannot point at the arm that never ran. Write ``if`` / ``else``. A
+``#define`` body, continuation lines included, is exempt: a macro that must expand to an expression
+- a compile-time constant, a value where no statement can stand - has no ``if`` to write.
 
 Rule 2, DOXYGEN TAG ALIGNMENT. Inside a ``/** ... */`` block the tag lines are read as a table, so
 they must look like one: fields are separated by TABS only (tab stop 4, as in .editorconfig), every
@@ -42,6 +44,7 @@ NAMED_TAGS = frozenset({"param", "retval"})
 _TAG = re.compile(r"^(\s*\*\s*)(@\w+(?:\[[^\]]*\])?)(.*)$")
 _RAW_SPELLING = re.compile(r"\b(__attribute__|__PACKED|__ALIGNED|__WEAK|__USED)\b")
 _GLOBAL_HEADER = re.compile(r"[A-Za-z]+Global\.h")
+_DEFINE = re.compile(r"\s*#\s*define\b")
 
 # The scanner states of rule 1: plain code, // to end of line, /* */, "..." and '...'.
 _CODE, _LINE_COMMENT, _BLOCK_COMMENT, _STRING, _CHAR = range(5)
@@ -92,6 +95,17 @@ def find_raw_spellings(path: str, text: str) -> list[tuple[int, str]]:
                 continue  # a fake of the vendor header defining the shorthand
             hits.append((text.count("\n", 0, match.start()) + 1, match.group(1)))
     return hits
+
+
+def define_lines(text: str) -> set[int]:
+    """Return the line numbers of every ``#define`` directive, its continuation lines included."""
+    found: set[int] = set()
+    inside = False
+    for number, raw in enumerate(text.split("\n"), 1):
+        if inside or _DEFINE.match(raw):
+            found.add(number)
+            inside = raw.rstrip("\r").endswith("\\")
+    return found
 
 
 def find_ternaries(text: str) -> list[int]:
@@ -208,7 +222,12 @@ def _doc_block(path: str, lines: list[str], start: int) -> tuple[int, list[str]]
 
 def check_text(path: str, text: str) -> list[str]:
     """Return every finding in one already-read source: ternaries, raw spellings, doc blocks."""
-    findings = [f"{path}:{line}: ternary operator (write if/else)" for line in find_ternaries(text)]
+    defines = define_lines(text)
+    findings = [
+        f"{path}:{line}: ternary operator (write if/else)"
+        for line in find_ternaries(text)
+        if line not in defines
+    ]
     findings += [
         f"{path}:{line}: {word} outside the Global header (use its ALX_ name)"
         for line, word in find_raw_spellings(path, text)
