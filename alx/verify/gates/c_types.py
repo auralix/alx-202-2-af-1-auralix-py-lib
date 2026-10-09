@@ -21,10 +21,11 @@ The declarations come from ``clang -Xclang -ast-dump=json -fsyntax-only`` with e
 command from a compile database, so a file is checked as its build sees it. Usage::
 
     python -m alx.verify.gates.c_types <compile_commands.json> [--file F]... [--root DIR]
-        [--exclude NAME]... [--prefix Alx]... [--clang PATH] [--out report.txt]
+        [--exclude NAME]... [--prefix Alx]... [--clang PATH] [--jobs N] [--out report.txt]
 
 Without ``--file`` every file of the database is checked; ``--root`` adds every C file under a
-folder, the headers among them, and ``--exclude`` leaves out a folder or a file by its name. Exit
+folder, the headers among them, and ``--exclude`` leaves out a folder or a file by its name;
+``--jobs`` dumps that many ASTs at once, each holding one file's whole AST in memory. Exit
 code 0 = PASS, 1 = FAIL. Every finding is one ``<file>:<line>: <kind> <name>: <type>: <what>``
 line.
 """
@@ -38,6 +39,7 @@ import re
 import shlex
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -214,6 +216,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--exclude", action="append", default=[], help="a folder or file to skip")
     parser.add_argument("--prefix", action="append", default=[], help="own type prefix (Alx)")
     parser.add_argument("--clang", default="clang", help="the clang to run")
+    parser.add_argument("--jobs", type=int, default=1, help="AST dumps at once (default 1)")
     parser.add_argument("--out", help="also write the report to this file")
     args = parser.parse_args(argv)
     prefixes = args.prefix or ["Alx"]
@@ -221,11 +224,17 @@ def main(argv: list[str] | None = None) -> int:
     wanted = {key(f) for f in args.file}
     entries = [e for e in entries if not wanted or key(entry_file(e)) in wanted]
     checked = checked_files(entries, args.root, args.exclude)
-    findings: set[str] = set()
-    for entry in entries:
+
+    def judged(entry: dict[str, Any]) -> list[str]:
+        # one entry's findings only: an AST is large, and --jobs of them are alive at once
         ast = ast_of(entry, args.clang)
-        for file, line, what in check_ast(ast, checked, prefixes, entry.get("directory", ".")):
-            findings.add(f"{file}:{line}: {what}")
+        directory = entry.get("directory", ".")
+        return [f"{f}:{n}: {what}" for f, n, what in check_ast(ast, checked, prefixes, directory)]
+
+    findings: set[str] = set()
+    with ThreadPoolExecutor(max_workers=args.jobs) as pool:
+        for found in pool.map(judged, entries):
+            findings.update(found)
     verdict = "FAIL" if findings else "PASS"
     report = "\n".join([f"C TYPES GATE: {verdict} ({len(entries)} files)", *sorted(findings)])
     report += "\n"

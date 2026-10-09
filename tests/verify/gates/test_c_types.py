@@ -18,6 +18,7 @@ Proofs (ALX-1564):
   P684 a file of the database is relative to its directory, and so is a file clang names; a root
        adds every C file under it, headers among them; an excluded name leaves out a file and,
        under the root, a folder
+  P697 --jobs dumps several ASTs at once, every file is dumped and every finding reported once
 """
 
 import json
@@ -249,3 +250,36 @@ def test_ALX1564_P684_a_root_adds_every_c_file_and_exclude_leaves_out_a_file_or_
     found = c_types.check_ast(ast, checked, ["Alx"], lib)
     assert [what for _, _, what in found] == ["variable count: int: never declared: int"]
     assert c_types.check_ast(ast, checked, ["Alx"]) == [], "relative to where clang ran, not to us"
+
+
+def test_ALX1564_P697_jobs_dump_several_asts_at_once_and_report_each_finding_once(
+    tmp_path, monkeypatch, capsys
+):
+    sources = [tmp_path / "alxA.c", tmp_path / "alxB.c", tmp_path / "alxC.c"]
+    for src in sources:
+        src.write_text("int count;\n", encoding="ascii")
+    db = tmp_path / "compile_commands.json"
+    entries = [
+        {"directory": str(tmp_path), "file": str(s), "arguments": ["clang", str(s)]}
+        for s in sources
+    ]
+    db.write_text(json.dumps(entries), encoding="utf-8")
+    header = str(tmp_path / "alxShared.h")
+    (tmp_path / "alxShared.h").write_text("long shared;\n", encoding="ascii")  # the root adds it
+    dumped = []
+
+    def fake_run(argv, **kw):
+        dumped.append(argv[-1])
+        own = _ast(argv[-1], _decl("VarDecl", "count", "int"), line=1)
+        shared = _ast(header, _decl("VarDecl", "shared", "long"), line=3)  # every file includes it
+        ast = {"kind": "TranslationUnitDecl", "inner": [*own["inner"], *shared["inner"]]}
+        return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(ast), stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert c_types.main([str(db), "--jobs", "3", "--root", str(tmp_path)]) == 1
+    assert sorted(dumped) == sorted(str(s) for s in sources)
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0] == "C TYPES GATE: FAIL (3 files)"
+    expected = [f"{s}:1: variable count: int: never declared: int" for s in sources]
+    expected.append(f"{header}:3: variable shared: long: never declared: long")
+    assert lines[1:] == sorted(expected), "the shared header's finding once, whoever reached it"
