@@ -11,6 +11,10 @@ Proofs (ALX-1544):
   P133 an llvm-cov export (the C library's native report) yields lines, branches, regions and functions;
        --metrics chooses what is gated, a metric a format lacks fails, files match by trailing path,
        nothing-to-cover counts as 100 %
+
+Proofs (ALX-1564):
+  P699 a pending file is reported under the minimum without failing; it fails once at the minimum on
+       every gated metric, and a pending name the report does not carry fails as stale
 """
 
 import json
@@ -263,3 +267,36 @@ def test_ALX1544_P133_llvm_export_metrics_selection_and_trailing_path_match(tmp_
     out = capsys.readouterr().out
     assert "COVERAGE GATE: PASS (min 100% on functions, 1 files)" in out
     assert "COVERAGE GATE: FAIL (min 100% on lines, branches, regions, functions, 1 files)" in out
+
+
+def test_ALX1564_P699_a_pending_file_is_reported_and_fails_only_once_it_is_at_the_minimum(
+    tmp_path, capsys
+):
+    report = tmp_path / "summary.json"
+    report.write_text(json.dumps(LLVM), encoding="utf-8")
+    files = coverage_gate.load(report)
+    assert_pc, fifo = sorted(f.name for f in files)
+    every = ("lines", "branches", "regions", "functions")
+    rows, failures = coverage_gate.evaluate(files, 100.0, (), every, ["alxAssertPc.c"])
+    assert failures == [f"{fifo}: branches 95.0% < 100%"], "the queue does not fail"
+    assert rows[0].startswith(assert_pc)
+    assert rows[0].endswith("  (pending)")
+    assert not rows[1].endswith("(pending)")
+    _, failures = coverage_gate.evaluate(
+        files, 100.0, ["alxAssertPc.c"], ("functions",), ["alxAssertPc.c"]
+    )
+    assert failures == [f"{assert_pc}: pending, and at the minimum - take it off the list"]
+    _, failures = coverage_gate.evaluate(
+        files, 100.0, ["alxFifo.c"], every, ["alxGone.c", "alxAssertPc.c"]
+    )
+    assert failures == [
+        f"{fifo}: branches 95.0% < 100%",
+        "alxGone.c: pending, and not in the report",
+    ], "a pending file outside the wanted ones is still in the report"
+    assert (
+        coverage_gate.main(
+            [str(report), "--metrics", "lines,regions", "--pending", "alxAssertPc.c"]
+        )
+        == 0
+    )
+    assert "(pending)" in capsys.readouterr().out

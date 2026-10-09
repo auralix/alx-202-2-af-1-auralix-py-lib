@@ -18,7 +18,8 @@ covered lines. A metric with nothing to cover (no branches in the file) counts a
 
 Without file arguments every file in the report is gated; a file argument matches the report's path
 exactly or by its trailing components (``alxFoo.c`` matches ``C:/repo/alxFoo.c``). Exit code 0 =
-PASS, 1 = FAIL.
+PASS, 1 = FAIL. ``--pending alxFoo.c`` (repeatable) names a file known to be under the minimum: it
+is reported and does not fail until it reaches the minimum, when it has to leave the list.
 """
 
 from __future__ import annotations
@@ -149,14 +150,19 @@ def evaluate(
     minimum: float,
     wanted: Iterable[str] = (),
     metrics: Iterable[str] = DEFAULT_METRICS,
+    pending: Iterable[str] = (),
 ) -> tuple[list[str], list[str]]:
     """Return ``(rows, failures)``: a row per gated file, a failure per metric under the minimum.
 
     ``wanted`` narrows the gate to those files (exact path or trailing components); a wanted file
     absent from the report is a failure. ``metrics`` names what is gated; a gated metric the report
-    does not carry is a failure too.
+    does not carry is a failure too. A ``pending`` file (matched the same way) is reported under
+    the minimum without failing, the repository's known queue; it fails once it reaches the
+    minimum on every gated metric, so the queue shrinks by deletion, and a pending name no file of
+    the report carries fails as stale.
     """
     want = [_norm(f) for f in wanted]
+    waiting = [_norm(f) for f in pending]
     gated = tuple(metrics)
     unknown = [m for m in gated if m not in METRICS]
     if unknown:
@@ -164,7 +170,10 @@ def evaluate(
     rows: list[str] = []
     failures: list[str] = []
     seen: set[str] = set()
+    still: set[str] = set()
     for fc in sorted(files, key=lambda f: f.name):
+        held = [p for p in waiting if _matches(fc.name, p)]
+        still.update(held)
         hits = [w for w in want if _matches(fc.name, w)]
         if want and not hits:
             continue
@@ -176,14 +185,23 @@ def evaluate(
             + "  ".join(cells)
             + (f"  missing {missing}" if missing else "")
             + (f"  partial branches {fc.partial_branches}" if fc.partial_branches else "")
+            + ("  (pending)" if held else "")
         )
+        short = []
         for m in gated:
             value = fc.metric(m)
             if value is None:
                 failures.append(f"{fc.name}: {m} not in the report")
             elif value < minimum:
-                failures.append(f"{fc.name}: {m} {value:.1f}% < {minimum:g}%")
+                short.append(f"{fc.name}: {m} {value:.1f}% < {minimum:g}%")
+        if not held:
+            failures += short
+        elif not short:
+            failures.append(f"{fc.name}: pending, and at the minimum - take it off the list")
     failures.extend(f"{name}: not in the report" for name in want if name not in seen)
+    failures.extend(
+        f"{name}: pending, and not in the report" for name in waiting if name not in still
+    )
     return rows, failures
 
 
@@ -203,11 +221,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--out", help="also write the report to this file")
     parser.add_argument(
+        "--pending", action="append", default=[], help="a file known to be under; repeatable"
+    )
+    parser.add_argument(
         "files", nargs="*", help="files to gate (default: every file in the report)"
     )
     args = parser.parse_intermixed_args(argv)  # files may follow the options
     metrics = tuple(m.strip() for m in args.metrics.split(",") if m.strip())
-    rows, failures = evaluate(load(args.report), args.min, args.files, metrics)
+    rows, failures = evaluate(load(args.report), args.min, args.files, metrics, args.pending)
     verdict = "FAIL" if failures else "PASS"
     lines = [
         f"COVERAGE GATE: {verdict} (min {args.min:g}% on {', '.join(metrics)}, {len(rows)} files)"
