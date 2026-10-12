@@ -881,13 +881,15 @@ class Matrix:
             raise MatrixError("; ".join(dict.fromkeys(problems)))
 
 
-def row_headers(matrix: Matrix, row: Row) -> dict[str, str]:
+def row_headers(matrix: Matrix, row: Row, extra: Iterable[Operation] = ()) -> dict[str, str]:
     """Return every configuration header of ``row`` by its name: the base's, then ``headers``.
 
     An operation goes to every header declaring its name; one no further header declares goes to
     the base, which declares it or, with ``append``, takes it in - else it is an error there.
+    ``extra`` operations apply after the row's own: the same row with something changed, as an
+    analyser runs a row once more with its checks disabled.
     """
-    operations = row_operations(matrix.fragments, row)
+    operations = [*row_operations(matrix.fragments, row), *extra]
     texts = {name: path.read_text(encoding="utf-8") for name, path in matrix.headers.items()}
     names = {name: declared(text) for name, text in texts.items()}
     elsewhere = set().union(*names.values())
@@ -900,11 +902,14 @@ def row_headers(matrix: Matrix, row: Row) -> dict[str, str]:
     return headers
 
 
-def write_config(matrix: Matrix, row: Row, out: Path) -> Path:
-    """Write the row's configuration folder under ``out`` and return it."""
+def write_config(matrix: Matrix, row: Row, out: Path, extra: Iterable[Operation] = ()) -> Path:
+    """Write the row's configuration folder under ``out`` and return it.
+
+    ``extra`` as in :func:`row_headers`.
+    """
     folder = out / "config"
     folder.mkdir(parents=True, exist_ok=True)
-    for name, text in row_headers(matrix, row).items():
+    for name, text in row_headers(matrix, row, extra).items():
         (folder / name).write_text(text, encoding="utf-8", newline="\n")
     for name, target in matrix.aliases.items():
         (folder / name).write_text(
