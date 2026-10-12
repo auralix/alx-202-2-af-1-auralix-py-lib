@@ -10,18 +10,31 @@ _Bool size_t ssize_t ptrdiff_t intptr_t uintptr_t wchar_t``, ``signed``/``unsign
 into an Auralix type.
 
 Every variable, parameter, field, function return and typedef that a checked file declares is
-compared; the qualifiers are stripped first. The named exceptions, closed:
+compared; the qualifiers are stripped first, and an array's bound with them. The named exceptions,
+closed:
 
 * ``int main`` with ``argc`` and ``argv``;
 * a function that implements a foreign interface - its name does not start with the prefix, the
-  vendor or HAL callback, the RTOS hook, a syscall - keeps the signature it was given;
-* a comparator handed to ``qsort``: ``int name(const void*, const void*)``.
+  vendor or HAL callback, the RTOS hook, a syscall, or the repository names it with ``--callback``
+  (a block-device callback a file system calls, written under the prefix) - keeps the signature it
+  was given;
+* a comparator handed to ``qsort``: ``int name(const void*, const void*)``;
+* a declaration a decision keeps, which the repository names with ``--exempt FILE:NAME`` - the
+  file's name and the declared name.
+
+``--pending FILE`` (repeatable) names a file whose foreign types wait for a decision: they are
+listed and do not fail, its other findings do. Once it declares no foreign type it fails, so the
+list shrinks by deletion, and a pending name no checked file carries fails as stale.
+
+A declaration clang makes itself - a builtin it declares at its first call, with the builtin's
+parameters - is no file's.
 
 The declarations come from ``clang -Xclang -ast-dump=json -fsyntax-only`` with each file's own
 command from a compile database, so a file is checked as its build sees it. Usage::
 
     python -m alx.verify.gates.c_types <compile_commands.json> [--file F]... [--root DIR]
-        [--exclude NAME]... [--prefix Alx]... [--clang PATH] [--jobs N] [--out report.txt]
+        [--exclude NAME]... [--prefix Alx]... [--callback NAME]... [--exempt FILE:NAME]...
+        [--pending FILE]... [--clang PATH] [--jobs N] [--out report.txt]
 
 Without ``--file`` every file of the database is checked; ``--root`` adds every C file under a
 folder, the headers among them, and ``--exclude`` leaves out a folder or a file by its name;
@@ -60,6 +73,7 @@ KINDS = {
     "FunctionDecl": "function", "TypedefDecl": "typedef",
 }  # fmt: skip
 _TOKEN = re.compile(r"[A-Za-z_]\w*")
+_BOUND = re.compile(r"\[[^\]]*\]")
 _UNNAMED = re.compile(r"\((?:unnamed|anonymous)\b.*?:\d+:\d+\)")
 
 
@@ -72,9 +86,11 @@ def type_names(qual_type: str) -> list[str]:
     """Return the type names in a clang type spelling, qualifiers, pointers and arrays stripped.
 
     An unnamed struct, union or enum is spelled with the place it is written - ``union (unnamed at
-    alxX.c:219:2)`` - and has no name to judge; its fields are declarations of their own.
+    alxX.c:219:2)`` - and has no name to judge; its fields are declarations of their own. An array's
+    bound is not a type either, the variable a variable-length array is sized by included.
     """
-    return [t for t in _TOKEN.findall(_UNNAMED.sub("", qual_type)) if t not in QUALIFIERS]
+    spelled = _BOUND.sub("[]", _UNNAMED.sub("", qual_type))
+    return [t for t in _TOKEN.findall(spelled) if t not in QUALIFIERS]
 
 
 def judge(names: Iterable[str], prefixes: Iterable[str]) -> str | None:
@@ -89,10 +105,12 @@ def judge(names: Iterable[str], prefixes: Iterable[str]) -> str | None:
     return None
 
 
-def exempt_function(node: dict[str, Any], prefixes: Iterable[str]) -> bool:
+def exempt_function(
+    node: dict[str, Any], prefixes: Iterable[str], callbacks: Iterable[str] = ()
+) -> bool:
     """Whether a function keeps the signature it was given (the named exceptions)."""
     name = node.get("name", "")
-    if name == "main":
+    if name == "main" or name in callbacks:
         return True
     own = (*prefixes, *(p.lower() for p in prefixes))
     if not name.startswith(own):
@@ -129,24 +147,36 @@ def walk(node: dict[str, Any], state: dict[str, Any]) -> Iterator[tuple[dict[str
 
 
 def check_ast(
-    ast: dict[str, Any], files: set[str], prefixes: list[str], directory: str | Path = "."
+    ast: dict[str, Any],
+    files: set[str],
+    prefixes: list[str],
+    directory: str | Path = ".",
+    callbacks: Iterable[str] = (),
+    exempt: Iterable[str] = (),
 ) -> list[tuple[str, int, str]]:
     """Return (file, line, finding) for every declaration of a checked file that breaks the list.
 
-    A file clang names relative is relative to ``directory``, the folder clang ran in.
+    A file clang names relative is relative to ``directory``, the folder clang ran in. ``callbacks``
+    and ``exempt`` are the repository's named exceptions: function names, and ``FILE:NAME`` pairs.
     """
     found = []
     exempt_params: set[int] = set()
+    kept = set(exempt)
     for node, file, line in walk(ast, {}):
         kind = node.get("kind")
-        if kind not in KINDS or not file or node.get("isImplicit"):
+        if node.get("isImplicit"):
+            exempt_params.update(id(c) for c in node.get("inner", []))  # a builtin's own parameters
+            continue
+        if kind not in KINDS or not file:
             continue
         if key(Path(directory) / file) not in files:
             continue
         name = node.get("name", "")
+        if f"{Path(file).name}:{name}" in kept:
+            continue
         qual = node.get("type", {}).get("qualType", "")
         if kind == "FunctionDecl":
-            if exempt_function(node, prefixes):
+            if exempt_function(node, prefixes, callbacks):
                 exempt_params.update(id(c) for c in node.get("inner", []))
                 continue
             qual = qual.split("(", 1)[0].strip()  # the return type; parameters are their own nodes
@@ -215,6 +245,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--root", help="also check every C file under this folder")
     parser.add_argument("--exclude", action="append", default=[], help="a folder or file to skip")
     parser.add_argument("--prefix", action="append", default=[], help="own type prefix (Alx)")
+    parser.add_argument(
+        "--callback", action="append", default=[], help="a function of a foreign interface"
+    )
+    parser.add_argument(
+        "--exempt", action="append", default=[], help="FILE:NAME, a declaration a decision keeps"
+    )
+    parser.add_argument(
+        "--pending", action="append", default=[], help="a file whose foreign types wait"
+    )
     parser.add_argument("--clang", default="clang", help="the clang to run")
     parser.add_argument("--jobs", type=int, default=1, help="AST dumps at once (default 1)")
     parser.add_argument("--out", help="also write the report to this file")
@@ -225,19 +264,37 @@ def main(argv: list[str] | None = None) -> int:
     entries = [e for e in entries if not wanted or key(entry_file(e)) in wanted]
     checked = checked_files(entries, args.root, args.exclude)
 
-    def judged(entry: dict[str, Any]) -> list[str]:
+    def judged(entry: dict[str, Any]) -> list[tuple[str, int, str]]:
         # one entry's findings only: an AST is large, and --jobs of them are alive at once
         ast = ast_of(entry, args.clang)
         directory = entry.get("directory", ".")
-        return [f"{f}:{n}: {what}" for f, n, what in check_ast(ast, checked, prefixes, directory)]
+        return check_ast(ast, checked, prefixes, directory, args.callback, args.exempt)
 
+    pending = {os.path.normcase(name) for name in args.pending}
     findings: set[str] = set()
+    waiting: set[str] = set()
+    held: set[str] = set()
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
         for found in pool.map(judged, entries):
-            findings.update(found)
+            for file, line, what in found:
+                name = os.path.normcase(Path(file).name)
+                if name in pending and ": a foreign type: " in what:
+                    waiting.add(f"{file}:{line}: {what}")
+                    held.add(name)
+                else:
+                    findings.add(f"{file}:{line}: {what}")
+    names = {Path(k).name for k in checked}  # a key is already in the platform's case
+    for name in sorted(pending - held):
+        why = "declares no foreign type - take it off the list" if name in names else "not checked"
+        findings.add(f"{name}: pending, and {why}")
     verdict = "FAIL" if findings else "PASS"
-    report = "\n".join([f"C TYPES GATE: {verdict} ({len(entries)} files)", *sorted(findings)])
-    report += "\n"
+    lines = [f"C TYPES GATE: {verdict} ({len(entries)} files)", *sorted(findings)]
+    if waiting:
+        lines.append(
+            f"Pending: {len(waiting)} foreign types in {len(held)} files wait for a decision"
+        )
+        lines += sorted(waiting)
+    report = "\n".join(lines) + "\n"
     sys.stdout.write(report)
     if args.out:
         Path(args.out).parent.mkdir(parents=True, exist_ok=True)

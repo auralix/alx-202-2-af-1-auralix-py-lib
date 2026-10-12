@@ -19,9 +19,16 @@ Proofs (ALX-1564):
        adds every C file under it, headers among them; an excluded name leaves out a file and,
        under the root, a folder
   P697 --jobs dumps several ASTs at once, every file is dumped and every finding reported once
+  P701 an array's bound is not a type, a variable-length array's variable included, and a builtin
+       clang declares at its first call is no file's, its parameters with it
+  P702 the repository's named exceptions: --callback names a function of a foreign interface
+       under the prefix, which keeps its signature; --exempt FILE:NAME a declaration a decision keeps
+  P703 --pending lists a file's foreign types without failing and still fails its other findings;
+       a pending file without a foreign type fails, and so does a pending name no file carries
 """
 
 import json
+import os
 import subprocess
 
 import pytest
@@ -283,3 +290,96 @@ def test_ALX1564_P697_jobs_dump_several_asts_at_once_and_report_each_finding_onc
     expected = [f"{s}:1: variable count: int: never declared: int" for s in sources]
     expected.append(f"{header}:3: variable shared: long: never declared: long")
     assert lines[1:] == sorted(expected), "the shared header's finding once, whoever reached it"
+
+
+def test_ALX1564_P701_an_array_bound_is_not_a_type_and_a_builtin_is_no_files(tmp_path):
+    assert c_types.type_names("uint8_t[regLen]") == ["uint8_t"], "a variable-length array"
+    assert c_types.type_names("const uint8_t *[ALX_LEN + 1]") == ["uint8_t"]
+    own = str(tmp_path / "alxX.c")
+    builtin = {
+        **_decl("FunctionDecl", "__builtin_va_start", "void (__builtin_va_list &, ...)"),
+        "isImplicit": True,
+        "inner": [_decl("ParmVarDecl", "", "__builtin_va_list &")],
+    }
+    ast = _ast(
+        own, _decl("VarDecl", "data", "uint8_t[regLen]"), builtin, _decl("VarDecl", "n", "int")
+    )
+    found = c_types.check_ast(ast, {c_types.key(own)}, ["Alx"])
+    assert [what for _, _, what in found] == ["variable n: int: never declared: int"], (
+        "the bound is the array's, and the builtin's parameter is clang's own"
+    )
+
+
+def test_ALX1564_P702_callbacks_and_exempt_declarations_are_the_repositorys_named_exceptions(
+    tmp_path,
+):
+    own = str(tmp_path / "alxFs.c")
+    callback = _decl(
+        "FunctionDecl",
+        "AlxFs_Lfs_Read",
+        "int (const struct lfs_config *, lfs_block_t)",
+        inner=[
+            _decl("ParmVarDecl", "c", "const struct lfs_config *"),
+            _decl("ParmVarDecl", "block", "lfs_block_t"),
+        ],
+    )
+    frozen = _decl("VarDecl", "consumed", "int")
+    other = _decl("VarDecl", "count", "int")
+    ast = _ast(own, callback, frozen, other)
+    checked = {c_types.key(own)}
+    assert len(c_types.check_ast(ast, checked, ["Alx"])) == 5, "under the prefix it is judged"
+    found = c_types.check_ast(
+        ast, checked, ["Alx"], callbacks=["AlxFs_Lfs_Read"], exempt=["alxFs.c:consumed"]
+    )
+    assert [what for _, _, what in found] == ["variable count: int: never declared: int"], (
+        "the callback keeps its signature and the exempt declaration its type; the file's name and "
+        "the declared name together select it"
+    )
+    assert len(c_types.check_ast(ast, checked, ["Alx"], exempt=["alxOther.c:consumed"])) == 5
+
+
+def test_ALX1564_P703_pending_lists_a_files_foreign_types_and_fails_the_rest(
+    tmp_path, monkeypatch, capsys
+):
+    sources = {name: tmp_path / name for name in ("alxA.c", "alxB.c", "alxC.c")}
+    for src in sources.values():
+        src.write_text("", encoding="ascii")
+    db = tmp_path / "compile_commands.json"
+    entries = [
+        {"directory": str(tmp_path), "file": str(s), "arguments": ["clang", str(s)]}
+        for s in sources.values()
+    ]
+    db.write_text(json.dumps(entries), encoding="utf-8")
+    declared = {
+        "alxA.c": [_decl("FieldDecl", "hi2c", "I2C_HandleTypeDef")],
+        "alxB.c": [_decl("VarDecl", "status", "HAL_StatusTypeDef"), _decl("VarDecl", "i", "int")],
+        "alxC.c": [_decl("VarDecl", "ok", "uint8_t")],
+    }
+
+    def fake_run(argv, **kw):
+        ast = _ast(argv[-1], *declared[argv[-1].rsplit("\\", 1)[-1].rsplit("/", 1)[-1]], line=4)
+        return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(ast), stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert c_types.main([str(db), "--pending", "alxA.c"]) == 1, "alxB.c's are not pending"
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0] == "C TYPES GATE: FAIL (3 files)"
+    assert lines[-2] == "Pending: 1 foreign types in 1 files wait for a decision"
+    assert lines[-1].endswith(
+        "alxA.c:4: field hi2c: I2C_HandleTypeDef: a foreign type: I2C_HandleTypeDef"
+    )
+
+    assert c_types.main([str(db), "--pending", "alxA.c", "--pending", "alxB.c"]) == 1
+    failing = capsys.readouterr().out.split("Pending:")[0]
+    assert "variable i: int: never declared: int" in failing, "a pending file's int still fails"
+    assert "HAL_StatusTypeDef" not in failing
+
+    declared["alxB.c"] = [_decl("VarDecl", "status", "HAL_StatusTypeDef")]
+    assert c_types.main([str(db), "--pending", "alxA.c", "--pending", "alxB.c"]) == 0
+    assert capsys.readouterr().out.startswith("C TYPES GATE: PASS (3 files)\nPending: 2 foreign")
+
+    assert c_types.main([str(db), "--pending", "alxC.c", "--pending", "alxGone.c"]) == 1
+    out = capsys.readouterr().out
+    clean, gone = (os.path.normcase(n) for n in ("alxC.c", "alxGone.c"))
+    assert f"{clean}: pending, and declares no foreign type - take it off the list" in out
+    assert f"{gone}: pending, and not checked" in out
