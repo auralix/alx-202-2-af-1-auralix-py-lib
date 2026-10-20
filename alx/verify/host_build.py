@@ -62,11 +62,16 @@ WARNINGS: tuple[str, ...] = (
     "-Wmissing-prototypes", "-Wmissing-declarations", "-Wmissing-variable-declarations",
     "-Wredundant-decls", "-Wnested-externs", "-Wbad-function-cast",
     "-Wcast-qual", "-Wwrite-strings", "-Wundef", "-Wvla", "-Walloca",
-    "-Wswitch-enum", "-Wswitch-default", "-Wenum-conversion",
+    "-Wswitch-default", "-Wenum-conversion",
     "-Wformat=2", "-Wfloat-equal", "-Wdouble-promotion", "-Wimplicit-fallthrough",
     "-Wnull-dereference", "-Wunused", "-Wunused-macros", "-Wno-unused-parameter",
 )  # fmt: skip
-"""The strict host warning set; a caller adds ``-Werror`` to make it a gate."""
+"""The strict host warning set; a caller adds ``-Werror`` to make it a gate.
+
+Not ``-Wswitch-enum``: it demands every enumerator in a ``switch`` that has a ``default``, so
+every new status value would have to be added to every such switch; ``-Wswitch`` (in ``-Wall``)
+still reports a switch without a ``default`` that misses one (TV, 2026-10-20).
+"""
 
 UBSAN: tuple[str, ...] = ("-fsanitize=undefined", "-fno-sanitize-recover=undefined")
 """SANITIZE variant: undefined behaviour is a hard failure, not a printed note."""
