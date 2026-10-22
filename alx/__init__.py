@@ -11,4 +11,4 @@ knowledge (MCU names, memory maps, ports, policy values) never lives here; the d
 in.
 """
 
-__version__ = "0.18.1"
+__version__ = "0.18.2"
