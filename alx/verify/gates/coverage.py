@@ -1,13 +1,32 @@
 # SPDX-License-Identifier: MIT
 """Coverage gate: each file of a coverage report meets the minimum in every gated metric.
 
-Three report formats, one gate for every language of the pipeline:
+Four report formats, one gate for every language of the pipeline:
 
 * cobertura XML - what coverage.py (``--cov-report=xml``), lcov-cobertura (the C library's llvm-cov
   lane) and coverlet (C#) all write: lines and branches
 * llvm-cov export JSON (``llvm-cov export -summary-only``): lines, branches, regions and functions,
   the C library's native report
 * coverage.py JSON (``--cov-report=json``): lines and branches with the missing-line detail
+* an lcov tracefile (``.info``, ``llvm-cov export -format=lcov``): lines, branches and functions,
+  computed here from its records, so that a source line can be exempted
+
+A line no test can reach - the ``default`` of a switch over an enumeration, the ``else`` after an
+exhaustive chain - carries one of lcov's exclusion markers (geninfo(1)) in a comment, followed by a
+colon and the reason, which the gate lists::
+
+    default: return 0;        // LCOV_EXCL_LINE: the switch is over the enumeration
+    else if (a && b)          // LCOV_EXCL_BR_LINE: the chain before leaves no other case
+
+``LCOV_EXCL_LINE`` takes the line out of lines, branches and functions, ``LCOV_EXCL_BR_LINE`` out
+of branches only; ``LCOV_EXCL_START``/``LCOV_EXCL_STOP`` and ``LCOV_EXCL_BR_START``/``_BR_STOP``
+mark a section (the start line in it, the stop line not). A marker without a reason fails, and
+so does a stale one: an excluded line the run reached, or a branch-excluded line whose every
+branch was taken - the exemption's reason no longer holds, as a strict xfail that passes.
+
+A line that is a closing brace alone (``}``, with or without a comment) is no line: llvm-cov
+charges the brace that closes a block after a ``return`` or a ``break`` with the region nothing
+reaches, and a brace executes nothing. It is left out when the source can be read.
 
 Every metric is gated on its own: a combined percentage would let missing branches hide behind
 covered lines. A metric with nothing to cover (no branches in the file) counts as 100 %. Usage::
@@ -15,6 +34,7 @@ covered lines. A metric with nothing to cover (no branches in the file) counts a
     python -m alx.verify.gates.coverage build/coverage/coverage.xml --min 100 [--out f] [file ...]
     python -m alx.verify.gates.coverage summary.json foo.c
         --metrics lines,branches,regions,functions
+    python -m alx.verify.gates.coverage lcov.info --metrics lines,branches,functions
 
 Without file arguments every file in the report is gated; a file argument matches the report's path
 exactly or by its trailing components (``alxFoo.c`` matches ``C:/repo/alxFoo.c``). Exit code 0 =
@@ -26,14 +46,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import xml.etree.ElementTree as ET
+from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Callable, Iterable
 
 METRICS = ("lines", "branches", "regions", "functions")
 DEFAULT_METRICS = ("lines", "branches")
@@ -50,6 +72,8 @@ class FileCoverage:
     partial_branches: int = 0
     regions_pct: float | None = None
     functions_pct: float | None = None
+    exempt: tuple[str, ...] = ()  # "line N: MARKER: reason", every marker the file carries
+    faults: tuple[str, ...] = ()  # a marker without a reason, or one the run reached
 
     def metric(self, name: str) -> float | None:
         """Return the percentage of ``name`` (one of METRICS), None when the report lacks it."""
@@ -129,9 +153,162 @@ def from_cobertura(root: ET.Element) -> list[FileCoverage]:
     return files
 
 
+_BRACE_ONLY = re.compile(r"^\s*\}\s*;?\s*(?://.*|/\*.*\*/\s*)?$")
+_MARKER = re.compile(
+    r"(LCOV_EXCL_BR_START|LCOV_EXCL_BR_STOP|LCOV_EXCL_BR_LINE|LCOV_EXCL_START|LCOV_EXCL_STOP|"
+    r"LCOV_EXCL_LINE)\b\s*(?::\s*(?P<reason>\S.*?))?\s*(?:\*/)?\s*$"
+)
+
+
+def exclusions(source: str) -> tuple[set[int], set[int], list[str], list[str]]:
+    """Return (lines excluded, lines excluded from branches, the markers listed, the faults).
+
+    The markers are lcov's (geninfo(1)); each needs ``: reason`` after it. A section's start line
+    is in the section and its stop line is not, as geninfo has it. A start without a stop, a stop
+    without a start, and a marker without a reason are faults.
+    """
+    excluded: set[int] = set()
+    branches: set[int] = set()
+    listed: list[str] = []
+    faults: list[str] = []
+    open_line: dict[str, int | None] = {"": None, "BR_": None}
+    for number, text in enumerate(source.split("\n"), start=1):
+        if _BRACE_ONLY.match(text):
+            excluded.add(number)
+        m = _MARKER.search(text)
+        if not m:
+            for kind, start in open_line.items():
+                if start is not None:
+                    (branches if kind else excluded).add(number)
+            continue
+        marker, reason = m.group(1), m.group("reason")
+        if not reason:
+            faults.append(f"line {number}: {marker} without a reason")
+            reason = "?"
+        listed.append(f"line {number}: {marker}: {reason}")
+        kind = "BR_" if "_BR_" in marker else ""
+        target = branches if kind else excluded
+        if marker.endswith("_LINE"):
+            target.add(number)
+        elif marker.endswith("_START"):
+            if open_line[kind] is not None:
+                faults.append(
+                    f"line {number}: {marker} inside a section open since line {open_line[kind]}"
+                )
+            open_line[kind] = number
+            target.add(number)
+        elif open_line[kind] is None:
+            faults.append(f"line {number}: {marker} without a start")
+        else:
+            open_line[kind] = None
+        for other, start in open_line.items():
+            if start is not None and other != kind:
+                (branches if other else excluded).add(number)
+    for kind, start in open_line.items():
+        if start is not None:
+            faults.append(f"line {start}: LCOV_EXCL_{kind}START without a stop")
+    return excluded, branches, listed, faults
+
+
+def _marked(source: str) -> set[int]:
+    """Return the lines a marker excludes on purpose: a reached one is a fault, a brace is not."""
+    excluded: set[int] = set()
+    open_at: int | None = None
+    for number, text in enumerate(source.split("\n"), start=1):
+        m = _MARKER.search(text)
+        marker = m.group(1) if m else ""
+        if marker == "LCOV_EXCL_LINE":
+            excluded.add(number)
+        elif marker == "LCOV_EXCL_START":
+            open_at = number
+        elif marker == "LCOV_EXCL_STOP":
+            open_at = None
+        if open_at is not None:
+            excluded.add(number)
+    return excluded
+
+
+def from_lcov(
+    text: str, read_source: Callable[[str], str | None] | None = None
+) -> list[FileCoverage]:
+    """Read an lcov tracefile: lines, branches and functions per file, the markers honoured.
+
+    ``read_source(path)`` returns a source file's text, or None when it cannot be read (then nothing
+    is excluded); by default the file named by the record is read.
+    """
+    if read_source is None:
+
+        def read_source(path: str) -> str | None:
+            try:
+                return Path(path).read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                return None
+
+    files: list[FileCoverage] = []
+    records: list[dict[str, Any]] = []
+    cur: dict[str, Any] | None = None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("SF:"):
+            cur = {"name": line[3:], "da": {}, "br": defaultdict(list), "fn": {}, "fnda": {}}
+            records.append(cur)
+        elif cur is None or line == "end_of_record":
+            cur = None if line == "end_of_record" else cur
+        elif line.startswith("DA:"):
+            number, hits = line[3:].split(",")[:2]
+            cur["da"][int(number)] = int(hits)
+        elif line.startswith("BRDA:"):
+            number, _block, _branch, taken = line[5:].split(",")
+            cur["br"][int(number)].append(0 if taken == "-" else int(taken))
+        elif line.startswith("FN:"):
+            number, name = line[3:].split(",", 1)
+            cur["fn"][name] = int(number)
+        elif line.startswith("FNDA:"):
+            hits, name = line[5:].split(",", 1)
+            cur["fnda"][name] = int(hits)
+    for rec in records:
+        source = read_source(rec["name"])
+        excluded, br_excluded, listed, faults = (
+            exclusions(source) if source is not None else (set(), set(), [], [])
+        )
+        marked = _marked(source) if source is not None else set()
+        da = {n: h for n, h in rec["da"].items() if n not in excluded}
+        br = {n: t for n, t in rec["br"].items() if n not in excluded and n not in br_excluded}
+        fn = {name: n for name, n in rec["fn"].items() if n not in excluded}
+        faults += [
+            f"line {n}: excluded, and the run reached it"
+            for n in sorted(excluded)
+            if rec["da"].get(n, 0) > 0 and n in marked
+        ]
+        faults += [
+            f"line {n}: excluded from branches, and the run took every branch"
+            for n in sorted(br_excluded)
+            if n in rec["br"] and all(t > 0 for t in rec["br"][n])
+        ]
+        branches_taken = sum(1 for t in br.values() for x in t if x > 0)
+        branches_total = sum(len(t) for t in br.values())
+        files.append(
+            FileCoverage(
+                _norm(rec["name"]),
+                _percent(sum(1 for h in da.values() if h > 0), len(da)),
+                _percent(branches_taken, branches_total),
+                tuple(n for n in sorted(da) if da[n] == 0),
+                sum(1 for t in br.values() if any(x == 0 for x in t) and any(x > 0 for x in t)),
+                functions_pct=_percent(
+                    sum(1 for name in fn if rec["fnda"].get(name, 0) > 0), len(fn)
+                ),
+                exempt=tuple(listed),
+                faults=tuple(faults),
+            )
+        )
+    return files
+
+
 def load(path: str | Path) -> list[FileCoverage]:
-    """Load a report by content: ``.xml`` cobertura; JSON is llvm-cov export or coverage.py."""
+    """Load a report by its suffix: .xml cobertura, .info lcov, .json llvm-cov or coverage.py."""
     path = Path(path)
+    if path.suffix.lower() == ".info":
+        return from_lcov(path.read_text(encoding="utf-8", errors="replace"))
     if path.suffix.lower() == ".xml":
         # the report is written by our own coverage tool, not untrusted input
         return from_cobertura(ET.parse(path).getroot())  # noqa: S314
@@ -159,7 +336,8 @@ def evaluate(
     does not carry is a failure too. A ``pending`` file (matched the same way) is reported under
     the minimum without failing, the repository's known queue; it fails once it reaches the
     minimum on every gated metric, so the queue shrinks by deletion, and a pending name no file of
-    the report carries fails as stale.
+    the report carries fails as stale. A file's exclusion markers are listed under its row, and
+    its faults - a marker without a reason, a stale one - are failures.
     """
     want = [_norm(f) for f in wanted]
     waiting = [_norm(f) for f in pending]
@@ -187,6 +365,8 @@ def evaluate(
             + (f"  partial branches {fc.partial_branches}" if fc.partial_branches else "")
             + ("  (pending)" if held else "")
         )
+        rows += [f"  exempt {e}" for e in fc.exempt]
+        failures += [f"{fc.name}: {fault}" for fault in fc.faults]
         short = []
         for m in gated:
             value = fc.metric(m)
@@ -210,7 +390,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m alx.verify.gates.coverage", description=__doc__
     )
-    parser.add_argument("report", help="cobertura .xml, llvm-cov export .json or coverage.py .json")
+    parser.add_argument(
+        "report", help="cobertura .xml, lcov .info, llvm-cov export .json or coverage.py .json"
+    )
     parser.add_argument(
         "--min", type=float, default=100.0, help="minimum percent for every gated metric"
     )

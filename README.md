@@ -2,7 +2,7 @@
 - This repository contains **Auralix Python Library**
 
 ## Version
-- Current Version - [v0.18.3](https://github.com/auralix/alx-202-2-af-1-auralix-py-lib/tree/v0.18.3)
+- Current Version - [v0.18.5](https://github.com/auralix/alx-202-2-af-1-auralix-py-lib/tree/v0.18.5)
 
 ## Links
 - [Auralix Python Library Verification System Stack](https://github.com/auralix/alx-202-af-30-auralix-c-lib-wiki/blob/master/Doc/AuralixCLibDoc.md#python-library-verification-system-stack)
