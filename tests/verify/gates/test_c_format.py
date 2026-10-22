@@ -15,6 +15,8 @@ Proofs (ALX-1564):
   P674 a lowercase PRIx and PRIo are findings; a format that is not a literal is not checked
   P675 the calls are found wherever they stand - a module trace macro, AlxTrace_WriteFormat,
        sprintf, snprintf, sscanf - but not in a comment, a string or a macro's own #define
+  P704 an 8-, 16- or 64-bit PRI or SCN macro is a finding (D50): a value is cast to 32 bits and
+       formatted with the 32-bit macro, a 64-bit value is not formatted
   P676 an exemption names a file and a call; main() exits 0 on PASS and 1 on FAIL, --out writes the
        report
 """
@@ -31,7 +33,7 @@ def _findings(tmp_path, source, name="alxX.c", exempt=()):
 def test_ALX1564_P671_the_tables_own_forms_pass(tmp_path):
     source = (
         "void f(void)\n{\n"
-        '\tALX_FIFO_TRACE_INF("len %" PRIu32 " id 0x%02" PRIX8 " v %" PRId16, len, id, v);\n'
+        '\tALX_FIFO_TRACE_INF("len %" PRIu32 " id 0x%02" PRIX32 " v %" PRId32, len, (uint32_t)id, (int32_t)v);\n'
         '\tALX_FIFO_TRACE_ERR("%d %c %s %p %f %% done", status, c, str, ptr, value);\n'
         '\tsprintf(buff, "%-8s|%08" PRIX32 "|%.3f|%5d", name, addr, value, n);\n'
         '\tsnprintf(buff, len, "buff %.*s", (int)len, data);\n'
@@ -72,7 +74,7 @@ def test_ALX1564_P672_a_conversion_outside_the_table_is_a_finding(tmp_path):
 
 
 def test_ALX1564_P673_sscanf_takes_scn_macros_lf_and_a_bounded_s(tmp_path):
-    good = 'void f(void)\n{\n\tsscanf(s, "(%" SCNu8 ",%" SCNd32 ") %lf %31s", &a, &b, &c, d);\n}\n'
+    good = 'void f(void)\n{\n\tsscanf(s, "(%" SCNu32 ",%" SCNd32 ") %lf %31s", &a, &b, &c, d);\n}\n'
     assert _findings(tmp_path, good) == []
     bad = (
         "void f(void)\n{\n"
@@ -140,3 +142,18 @@ def test_ALX1564_P676_an_exemption_names_a_file_and_a_call_and_main_reports(tmp_
     clean = tmp_path / "alxClean.c"
     clean.write_text('void f(void)\n{\n\tsprintf(b, "%d", a);\n}\n', encoding="ascii")
     assert c_format.main([str(clean)]) == 0
+
+
+def test_ALX1564_P704_an_8_16_or_64_bit_macro_is_a_finding(tmp_path):
+    source = (
+        "void f(void)\n{\n"
+        '\tALX_X_TRACE_INF("a %" PRIu8 " b %" PRId16 " c %" PRIX64 " d %" PRIu32, a, b, c, d);\n'
+        '\tsscanf(s, "%" SCNu16 " %" SCNd32, &a, &b);\n'
+        "}\n"
+    )
+    assert [f.split(": ", 2)[2] for f in _findings(tmp_path, source)] == [
+        "PRIu8: only the 32-bit PRIu, PRId, PRIX, SCNu and SCNd macros",
+        "PRId16: only the 32-bit PRIu, PRId, PRIX, SCNu and SCNd macros",
+        "PRIX64: only the 32-bit PRIu, PRId, PRIX, SCNu and SCNd macros",
+        "SCNu16: only the 32-bit PRIu, PRId, PRIX, SCNu and SCNd macros",
+    ], "the 32-bit macros pass, every other width is named"

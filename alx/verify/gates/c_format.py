@@ -5,8 +5,9 @@ A format string is the first string argument of a trace macro (any ``<PREFIX>_<.
 of ``AlxTrace_WriteFormat``, ``sprintf``, ``snprintf`` or ``sscanf``. Adjacent literals and the
 PRI and SCN macros between them are one format. Every conversion must be one of:
 
-* a PRI or SCN macro of a fixed-width integer spliced into the text (``"len %" PRIu32``), hex only
-  through the uppercase ``PRIX``;
+* a 32-bit PRI or SCN macro spliced into the text (``"len %" PRIu32``), hex only through the
+  uppercase ``PRIX32``: an 8- or 16-bit value is cast to 32 bits at the call and a 64-bit value is
+  not formatted (D50, 2026-10-22 - newlib-nano's printf and scanf have no ``hh`` and no ``ll``);
 * a bare ``%d``, ``%c``, ``%s``, ``%p``, ``%f`` or ``%%``;
 * with the flags ``-`` and ``0``, width digits and ``.precision``, which are formatting; ``%.*s``
   with an ``(int)`` length on the call is the one ``*`` allowed, decision 12's named exception;
@@ -14,7 +15,8 @@ PRI and SCN macros between them are one format. Every conversion must be one of:
   (``%31s``).
 
 Never: ``%u %x %X %o %i %e %E %g %G %a %n``; a length modifier (``l ll h hh z j t L``) but
-scanf's ``%lf``; the ``#`` flag; a ``*`` width; a lowercase ``PRIx``; ``PRIo``. An exemption names
+scanf's ``%lf``; the ``#`` flag; a ``*`` width; a lowercase ``PRIx``; ``PRIo``; an 8-, 16- or
+64-bit PRI or SCN macro. An exemption names
 a file and a call (``alxBoot.c:sscanf``), for a spot TV froze. A format that is not a literal - a
 variable - is not checked. Usage::
 
@@ -40,7 +42,7 @@ CALL = re.compile(
     r"|sscanf)\s*\("
 )
 MACRO = re.compile(r"(?:PRI|SCN)[diouxX](?:8|16|32|64)")
-ALLOWED_MACRO = re.compile(r"(?:PRI[duX]|SCN[du])(?:8|16|32|64)")
+ALLOWED_MACRO = re.compile(r"(?:PRI[duX]|SCN[du])32")
 BARE = frozenset("dcspf")
 CONVERSION = re.compile(
     r"%(?P<flags>[-+ #0]*)(?P<width>\*|\d+)?(?:\.(?P<prec>\*|\d*))?(?P<len>hh|h|ll|l|z|j|t|L)?"
@@ -140,7 +142,7 @@ def check_format(pieces: list[str], call: str, values: Sequence[str] = ()) -> li
     for n, piece in enumerate(pieces):
         if not piece.startswith('"'):
             if not ALLOWED_MACRO.fullmatch(piece):
-                found.append(f"{piece}: only PRIu, PRId, PRIX, SCNu and SCNd macros")
+                found.append(f"{piece}: only the 32-bit PRIu, PRId, PRIX, SCNu and SCNd macros")
             continue
         text = piece[1:]
         for conv in CONVERSION.finditer(text):
