@@ -24,6 +24,10 @@ mark a section (the start line in it, the stop line not). A marker without a rea
 so does a stale one: an excluded line the run reached, or a branch-excluded line whose every
 branch was taken - the exemption's reason no longer holds, as a strict xfail that passes.
 
+A line that is a closing brace alone (``}``, with or without a comment) is no line: llvm-cov
+charges the brace that closes a block after a ``return`` or a ``break`` with the region nothing
+reaches, and a brace executes nothing. It is left out when the source can be read.
+
 Every metric is gated on its own: a combined percentage would let missing branches hide behind
 covered lines. A metric with nothing to cover (no branches in the file) counts as 100 %. Usage::
 
@@ -149,6 +153,7 @@ def from_cobertura(root: ET.Element) -> list[FileCoverage]:
     return files
 
 
+_BRACE_ONLY = re.compile(r"^\s*\}\s*;?\s*(?://.*|/\*.*\*/\s*)?$")
 _MARKER = re.compile(
     r"(LCOV_EXCL_BR_START|LCOV_EXCL_BR_STOP|LCOV_EXCL_BR_LINE|LCOV_EXCL_START|LCOV_EXCL_STOP|"
     r"LCOV_EXCL_LINE)\b\s*(?::\s*(?P<reason>\S.*?))?\s*(?:\*/)?\s*$"
@@ -168,6 +173,8 @@ def exclusions(source: str) -> tuple[set[int], set[int], list[str], list[str]]:
     faults: list[str] = []
     open_line: dict[str, int | None] = {"": None, "BR_": None}
     for number, text in enumerate(source.split("\n"), start=1):
+        if _BRACE_ONLY.match(text):
+            excluded.add(number)
         m = _MARKER.search(text)
         if not m:
             for kind, start in open_line.items():
@@ -201,6 +208,24 @@ def exclusions(source: str) -> tuple[set[int], set[int], list[str], list[str]]:
         if start is not None:
             faults.append(f"line {start}: LCOV_EXCL_{kind}START without a stop")
     return excluded, branches, listed, faults
+
+
+def _marked(source: str) -> set[int]:
+    """Return the lines a marker excludes on purpose: a reached one is a fault, a brace is not."""
+    excluded: set[int] = set()
+    open_at: int | None = None
+    for number, text in enumerate(source.split("\n"), start=1):
+        m = _MARKER.search(text)
+        marker = m.group(1) if m else ""
+        if marker == "LCOV_EXCL_LINE":
+            excluded.add(number)
+        elif marker == "LCOV_EXCL_START":
+            open_at = number
+        elif marker == "LCOV_EXCL_STOP":
+            open_at = None
+        if open_at is not None:
+            excluded.add(number)
+    return excluded
 
 
 def from_lcov(
@@ -246,13 +271,14 @@ def from_lcov(
         excluded, br_excluded, listed, faults = (
             exclusions(source) if source is not None else (set(), set(), [], [])
         )
+        marked = _marked(source) if source is not None else set()
         da = {n: h for n, h in rec["da"].items() if n not in excluded}
         br = {n: t for n, t in rec["br"].items() if n not in excluded and n not in br_excluded}
         fn = {name: n for name, n in rec["fn"].items() if n not in excluded}
         faults += [
             f"line {n}: excluded, and the run reached it"
             for n in sorted(excluded)
-            if rec["da"].get(n, 0) > 0
+            if rec["da"].get(n, 0) > 0 and n in marked
         ]
         faults += [
             f"line {n}: excluded from branches, and the run took every branch"

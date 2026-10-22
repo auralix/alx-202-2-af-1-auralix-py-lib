@@ -20,6 +20,8 @@ Proofs (ALX-1564):
        branches alone, by line or by section, and are listed; a marker without a reason, a start
        without a stop, a stop without a start, and a stale marker - an excluded line the run reached,
        a branch-excluded line whose every branch was taken - fail
+  P718 a line that is a closing brace alone is no line: llvm charges the brace after a return or
+       a break with the region nothing reaches; a marked brace the run reached is stale all the same
 """
 
 import json
@@ -320,14 +322,17 @@ DA:20,0
 DA:21,0
 DA:30,5
 DA:31,2
+DA:32,0
+DA:33,0
+DA:34,7
 BRDA:11,0,0,3
 BRDA:11,0,1,0
 BRDA:30,0,0,5
 BRDA:30,0,1,0
 BRDA:31,0,0,2
 BRDA:31,0,1,1
-LF:8
-LH:4
+LF:11
+LH:5
 BRF:6
 BRH:4
 FNF:2
@@ -366,6 +371,9 @@ line 28
 line 29
 	if (x)
 	if (y)
+	}
+	};   // the brace after a return
+	}   // LCOV_EXCL_LINE: not a brace rule - the marker; reached
 """
 
 
@@ -380,7 +388,7 @@ def test_ALX1564_P706_an_lcov_tracefile_is_gated_with_its_sources_exclusion_mark
     (fc,) = coverage_gate.load(info)
     assert fc.name == str(src).replace("\\", "/")
     # 12 to 14 and 20 are excluded; the records left are 10, 11, 21, 30 and 31, and 21 is uncovered
-    assert fc.missing_lines == (21,)
+    assert fc.missing_lines == (21,), "32 and 33 are braces alone, 34 is a marked brace"
     assert fc.lines_pct == pytest.approx(100.0 * 4 / 5)
     assert fc.branches_pct == pytest.approx(100.0 * 3 / 4), "11 is out; 30 half, 31 whole"
     assert fc.partial_branches == 1, "line 30; line 31 took both"
@@ -390,13 +398,18 @@ def test_ALX1564_P706_an_lcov_tracefile_is_gated_with_its_sources_exclusion_mark
         "line 12: LCOV_EXCL_START: the default of a switch over the enumeration",
         "line 14: LCOV_EXCL_STOP: ?",
         "line 20: LCOV_EXCL_LINE: a stub TV keeps",
+        "line 34: LCOV_EXCL_LINE: not a brace rule - the marker; reached",
     )
-    assert fc.faults == ("line 14: LCOV_EXCL_STOP without a reason",)
+    assert fc.faults == (
+        "line 14: LCOV_EXCL_STOP without a reason",
+        "line 34: excluded, and the run reached it",
+    ), "a marked brace the run reached is stale like any marked line"
 
     rows, failures = coverage_gate.evaluate([fc], 100.0, (), ("lines", "branches", "functions"))
     assert rows[1:] == [f"  exempt {e}" for e in fc.exempt]
     assert failures == [
         f"{fc.name}: line 14: LCOV_EXCL_STOP without a reason",
+        f"{fc.name}: line 34: excluded, and the run reached it",
         f"{fc.name}: lines 80.0% < 100%",
         f"{fc.name}: branches 75.0% < 100%",
     ]
@@ -427,7 +440,9 @@ def test_ALX1564_P706_an_lcov_tracefile_is_gated_with_its_sources_exclusion_mark
     stray = "TN:\n" + LCOV.replace("SRC", str(src))
     (unread,) = coverage_gate.from_lcov(stray, lambda _path: None)
     assert unread.exempt == (), "a source that cannot be read exempts nothing"
-    assert unread.lines_pct == pytest.approx(100.0 * 4 / 8), "and every record counts"
+    assert unread.lines_pct == pytest.approx(100.0 * 5 / 11), (
+        "and every record counts, the braces too"
+    )
     (gone,) = coverage_gate.from_lcov(LCOV.replace("SRC", str(tmp_path / "gone.c")))
     assert gone.exempt == (), "a source that is not there, the same"
 
