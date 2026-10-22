@@ -25,6 +25,10 @@ Proofs (ALX-1564):
        under the prefix, which keeps its signature; --exempt FILE:NAME a declaration a decision keeps
   P703 --pending lists a file's foreign types without failing and still fails its other findings;
        a pending file without a foreign type fails, and so does a pending name no file carries
+  P705 --backend names the files that talk to a vendor, by a folder's name or a file glob: a
+       foreign type declared there is the vendor's, listed and not failing; the never-declared
+       types fail there too, and a foreign type outside a backend fails as before (rule 1 as
+       amended, D55)
 """
 
 import json
@@ -383,3 +387,67 @@ def test_ALX1564_P703_pending_lists_a_files_foreign_types_and_fails_the_rest(
     clean, gone = (os.path.normcase(n) for n in ("alxC.c", "alxGone.c"))
     assert f"{clean}: pending, and declares no foreign type - take it off the list" in out
     assert f"{gone}: pending, and not checked" in out
+
+
+def test_ALX1564_P705_a_backend_declares_its_vendors_types_and_nothing_else_does(
+    tmp_path, monkeypatch, capsys
+):
+    lib = tmp_path / "lib"
+    names = ("alxFtp.c", "alxOsThread.c", "Mcu/McuStm32/alxI2c_McuStm32.c", "Mcu/alxTrace.c")
+    for name in names:
+        (lib / name).parent.mkdir(parents=True, exist_ok=True)
+        (lib / name).write_text("", encoding="ascii")
+    db = tmp_path / "compile_commands.json"
+    entries = [
+        {"directory": str(lib), "file": name, "arguments": ["clang", name]} for name in names
+    ]
+    db.write_text(json.dumps(entries), encoding="utf-8")
+    declared = {
+        "alxFtp.c": [_decl("VarDecl", "len", "size_t"), _decl("VarDecl", "t", "TickType_t")],
+        "alxOsThread.c": [_decl("FieldDecl", "handle", "TaskHandle_t")],
+        "alxI2c_McuStm32.c": [
+            _decl("FieldDecl", "hi2c", "I2C_HandleTypeDef"),
+            _decl("VarDecl", "status", "HAL_StatusTypeDef"),
+            _decl("VarDecl", "i", "int"),
+        ],
+        "alxTrace.c": [_decl("ParmVarDecl", "args", "va_list")],
+    }
+
+    def fake_run(argv, **kw):
+        name = argv[-1].rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
+        ast = _ast(argv[-1], *declared[name], line=7)
+        return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(ast), stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    backends = ["--backend", "Mcu", "--backend", "alxOs*.[ch]"]
+    assert c_types.main([str(db), "--root", str(lib), *backends]) == 1
+    out = capsys.readouterr().out
+    failing, listed = out.split("Backends: ")
+    assert failing.startswith("C TYPES GATE: FAIL (4 files)")
+    assert "alxFtp.c:7: variable len: size_t: never declared: size_t" in failing
+    assert "alxFtp.c:7: variable t: TickType_t: a foreign type: TickType_t" in failing, (
+        "an RTOS type outside a backend"
+    )
+    assert "alxI2c_McuStm32.c:7: variable i: int: never declared: int" in failing, (
+        "a backend declares no int either"
+    )
+    assert "HAL_StatusTypeDef" not in failing
+    assert "TaskHandle_t" not in failing
+    assert listed.startswith("4 vendor types in 3 files (rule 1)\n")
+    assert [line.rsplit(": ", 3)[1:] for line in listed.splitlines()[1:]] == [
+        ["field hi2c", "I2C_HandleTypeDef", c_types.VENDOR],
+        ["variable status", "HAL_StatusTypeDef", c_types.VENDOR],
+        ["parameter args", "va_list", c_types.VENDOR],
+        ["field handle", "TaskHandle_t", c_types.VENDOR],
+    ], "the folder's files, a file under a folder of it, and the glob's; by path"
+
+    declared["alxFtp.c"] = [_decl("VarDecl", "ok", "bool")]
+    declared["alxI2c_McuStm32.c"] = [_decl("FieldDecl", "hi2c", "I2C_HandleTypeDef")]
+    assert c_types.main([str(db), "--root", str(lib), *backends]) == 0
+    assert capsys.readouterr().out.startswith("C TYPES GATE: PASS (4 files)\nBackends: 3 vendor")
+
+    assert c_types.main([str(db), "--root", str(lib)]) == 1, "without the option every one fails"
+    assert "Backends:" not in capsys.readouterr().out
+
+    keys = c_types.backend_files(entries, str(lib), ["mcu", "ALXOS*"])
+    assert keys == set(), "a pattern is matched in the name's own case"

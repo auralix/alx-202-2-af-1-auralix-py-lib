@@ -7,7 +7,12 @@ start with the repository's prefix (``Alx`` by default) - and ``void``. ``const`
 and ``[n]`` are qualifiers on any of them. Never declared: ``int unsigned short long signed
 _Bool size_t ssize_t ptrdiff_t intptr_t uintptr_t wchar_t``, ``signed``/``unsigned char`` and
 ``long double``; a foreign type from libc or a vendor lives only inside the cast that turns it
-into an Auralix type.
+into an Auralix type. A vendor's object - a HAL or SDK handle, a register block, a configuration
+structure, an RTOS handle, a file-system object, a ``va_list`` - cannot be cast: it is declared as
+the vendor's type in the backend that talks to that vendor and nowhere else (rule 1 as amended on
+2026-10-22). The repository names its backends with ``--backend PATTERN``: a folder's name or a
+file-name glob, such as ``Mcu`` or ``alxOs*.[ch]``; in a backend a foreign type is listed as the
+vendor's and does not fail, the never-declared types fail there as everywhere.
 
 Every variable, parameter, field, function return and typedef that a checked file declares is
 compared; the qualifiers are stripped first, and an array's bound with them. The named exceptions,
@@ -33,8 +38,8 @@ The declarations come from ``clang -Xclang -ast-dump=json -fsyntax-only`` with e
 command from a compile database, so a file is checked as its build sees it. Usage::
 
     python -m alx.verify.gates.c_types <compile_commands.json> [--file F]... [--root DIR]
-        [--exclude NAME]... [--prefix Alx]... [--callback NAME]... [--exempt FILE:NAME]...
-        [--pending FILE]... [--clang PATH] [--jobs N] [--out report.txt]
+        [--exclude NAME]... [--backend PATTERN]... [--prefix Alx]... [--callback NAME]...
+        [--exempt FILE:NAME]... [--pending FILE]... [--clang PATH] [--jobs N] [--out report.txt]
 
 Without ``--file`` every file of the database is checked; ``--root`` adds every C file under a
 folder, the headers among them, and ``--exclude`` leaves out a folder or a file by its name;
@@ -46,6 +51,7 @@ line.
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import os
 import re
@@ -146,6 +152,9 @@ def walk(node: dict[str, Any], state: dict[str, Any]) -> Iterator[tuple[dict[str
         yield from walk(child, state)
 
 
+VENDOR = "a vendor's type in its backend"
+
+
 def check_ast(
     ast: dict[str, Any],
     files: set[str],
@@ -153,15 +162,19 @@ def check_ast(
     directory: str | Path = ".",
     callbacks: Iterable[str] = (),
     exempt: Iterable[str] = (),
+    backends: Iterable[str] = (),
 ) -> list[tuple[str, int, str]]:
     """Return (file, line, finding) for every declaration of a checked file that breaks the list.
 
     A file clang names relative is relative to ``directory``, the folder clang ran in. ``callbacks``
     and ``exempt`` are the repository's named exceptions: function names, and ``FILE:NAME`` pairs.
+    ``backends`` are the keys of the files that talk to a vendor: a foreign type declared there is
+    returned as ``VENDOR`` for the report, not as a finding.
     """
     found = []
     exempt_params: set[int] = set()
     kept = set(exempt)
+    vendors = set(backends)
     for node, file, line in walk(ast, {}):
         kind = node.get("kind")
         if node.get("isImplicit"):
@@ -169,7 +182,8 @@ def check_ast(
             continue
         if kind not in KINDS or not file:
             continue
-        if key(Path(directory) / file) not in files:
+        file_key = key(Path(directory) / file)
+        if file_key not in files:
             continue
         name = node.get("name", "")
         if f"{Path(file).name}:{name}" in kept:
@@ -183,6 +197,8 @@ def check_ast(
         if kind == "ParmVarDecl" and id(node) in exempt_params:
             continue
         what = judge(type_names(qual), prefixes)
+        if what and what.startswith("a foreign type") and file_key in vendors:
+            what = VENDOR
         if what:
             found.append((file, line, f"{KINDS[kind]} {name}: {qual}: {what}"))
     return found
@@ -215,6 +231,22 @@ def entry_file(entry: dict[str, Any]) -> Path:
     return Path(entry.get("directory", ".")) / str(entry["file"])
 
 
+def _named(entries: list[dict[str, Any]], root: str | None) -> Iterator[tuple[Path, set[str]]]:
+    """Yield every file of the database and, with a root, under it, with the names it goes by.
+
+    The names are the file's own and, under the root, every folder between the two.
+    """
+    base = Path(root).resolve() if root else None
+    files = [entry_file(e).resolve() for e in entries]
+    if base is not None:
+        files += [f.resolve() for f in base.rglob("*.[ch]")]
+    for file in files:
+        parts = {file.name}
+        if base is not None and file.is_relative_to(base):
+            parts |= set(file.relative_to(base).parts)
+        yield file, parts
+
+
 def checked_files(
     entries: list[dict[str, Any]], root: str | None, exclude: Iterable[str]
 ) -> set[str]:
@@ -223,18 +255,23 @@ def checked_files(
     A file is left out when its name is excluded or, under the root, a folder between the two is.
     """
     exclude = set(exclude)
-    base = Path(root).resolve() if root else None
-    files = [entry_file(e).resolve() for e in entries]
-    if base is not None:
-        files += [f.resolve() for f in base.rglob("*.[ch]")]
-    kept = set()
-    for file in files:
-        parts = {file.name}
-        if base is not None and file.is_relative_to(base):
-            parts |= set(file.relative_to(base).parts)
-        if not parts & exclude:
-            kept.add(key(file))
-    return kept
+    return {key(file) for file, parts in _named(entries, root) if not parts & exclude}
+
+
+def backend_files(
+    entries: list[dict[str, Any]], root: str | None, patterns: Iterable[str]
+) -> set[str]:
+    """Return the keys of the files that talk to a vendor: a name of theirs matches a pattern.
+
+    A pattern is a folder's name or a file-name glob (``Mcu``, ``alxOs*.[ch]``), matched case-
+    sensitively against the file's name and, under the root, each folder between the two.
+    """
+    patterns = list(patterns)
+    return {
+        key(file)
+        for file, parts in _named(entries, root)
+        if any(fnmatch.fnmatchcase(part, pat) for part in parts for pat in patterns)
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -244,6 +281,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--file", action="append", default=[], help="a file to check; repeatable")
     parser.add_argument("--root", help="also check every C file under this folder")
     parser.add_argument("--exclude", action="append", default=[], help="a folder or file to skip")
+    parser.add_argument(
+        "--backend", action="append", default=[], help="a folder or file glob of a vendor's backend"
+    )
     parser.add_argument("--prefix", action="append", default=[], help="own type prefix (Alx)")
     parser.add_argument(
         "--callback", action="append", default=[], help="a function of a foreign interface"
@@ -263,22 +303,28 @@ def main(argv: list[str] | None = None) -> int:
     wanted = {key(f) for f in args.file}
     entries = [e for e in entries if not wanted or key(entry_file(e)) in wanted]
     checked = checked_files(entries, args.root, args.exclude)
+    backends = backend_files(entries, args.root, args.backend)
 
     def judged(entry: dict[str, Any]) -> list[tuple[str, int, str]]:
         # one entry's findings only: an AST is large, and --jobs of them are alive at once
         ast = ast_of(entry, args.clang)
         directory = entry.get("directory", ".")
-        return check_ast(ast, checked, prefixes, directory, args.callback, args.exempt)
+        return check_ast(ast, checked, prefixes, directory, args.callback, args.exempt, backends)
 
     pending = {os.path.normcase(name) for name in args.pending}
     findings: set[str] = set()
     waiting: set[str] = set()
     held: set[str] = set()
+    vendor: set[str] = set()
+    vendor_files: set[str] = set()
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
         for found in pool.map(judged, entries):
             for file, line, what in found:
                 name = os.path.normcase(Path(file).name)
-                if name in pending and ": a foreign type: " in what:
+                if what.endswith(VENDOR):
+                    vendor.add(f"{file}:{line}: {what}")
+                    vendor_files.add(name)
+                elif name in pending and ": a foreign type: " in what:
                     waiting.add(f"{file}:{line}: {what}")
                     held.add(name)
                 else:
@@ -294,6 +340,9 @@ def main(argv: list[str] | None = None) -> int:
             f"Pending: {len(waiting)} foreign types in {len(held)} files wait for a decision"
         )
         lines += sorted(waiting)
+    if vendor:
+        lines.append(f"Backends: {len(vendor)} vendor types in {len(vendor_files)} files (rule 1)")
+        lines += sorted(vendor)
     report = "\n".join(lines) + "\n"
     sys.stdout.write(report)
     if args.out:
