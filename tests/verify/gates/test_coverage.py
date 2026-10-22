@@ -15,6 +15,11 @@ Proofs (ALX-1544):
 Proofs (ALX-1564):
   P699 a pending file is reported under the minimum without failing; it fails once at the minimum on
        every gated metric, and a pending name the report does not carry fails as stale
+  P706 an lcov tracefile yields lines, branches and functions from its records; lcov's exclusion
+       markers in the source, each with a reason, take a line out of the figures or out of the
+       branches alone, by line or by section, and are listed; a marker without a reason, a start
+       without a stop, a stop without a start, and a stale marker - an excluded line the run reached,
+       a branch-excluded line whose every branch was taken - fail
 """
 
 import json
@@ -300,3 +305,132 @@ def test_ALX1564_P699_a_pending_file_is_reported_and_fails_only_once_it_is_at_th
         == 0
     )
     assert "(pending)" in capsys.readouterr().out
+
+
+LCOV = """SF:SRC
+FN:10,AlxX_Ctor
+FNDA:3,AlxX_Ctor
+FN:20,AlxX_Get
+FNDA:0,AlxX_Get
+DA:10,3
+DA:11,3
+DA:12,0
+DA:13,0
+DA:20,0
+DA:21,0
+DA:30,5
+DA:31,2
+BRDA:11,0,0,3
+BRDA:11,0,1,0
+BRDA:30,0,0,5
+BRDA:30,0,1,0
+BRDA:31,0,0,2
+BRDA:31,0,1,1
+LF:8
+LH:4
+BRF:6
+BRH:4
+FNF:2
+FNH:1
+end_of_record
+"""
+SOURCE = """\
+line 1
+line 2
+line 3
+line 4
+line 5
+line 6
+line 7
+line 8
+line 9
+void AlxX_Ctor(void)
+	if (a && b)                 // LCOV_EXCL_BR_LINE: the chain before leaves no other case
+	{                           // LCOV_EXCL_START: the default of a switch over the enumeration
+	ALX_X_ASSERT(false);
+	}                           // LCOV_EXCL_STOP
+line 15
+line 16
+line 17
+line 18
+line 19
+void AlxX_Get(void)         /* LCOV_EXCL_LINE: a stub TV keeps */
+	return 0;
+line 22
+line 23
+line 24
+line 25
+line 26
+line 27
+line 28
+line 29
+	if (x)
+	if (y)
+"""
+
+
+def test_ALX1564_P706_an_lcov_tracefile_is_gated_with_its_sources_exclusion_markers(
+    tmp_path, capsys
+):
+    src = tmp_path / "alxX.c"
+    src.write_text(SOURCE, encoding="ascii")
+    info = tmp_path / "lcov.info"
+    info.write_text(LCOV.replace("SRC", str(src)), encoding="ascii")
+
+    (fc,) = coverage_gate.load(info)
+    assert fc.name == str(src).replace("\\", "/")
+    # 12 to 14 and 20 are excluded; the records left are 10, 11, 21, 30 and 31, and 21 is uncovered
+    assert fc.missing_lines == (21,)
+    assert fc.lines_pct == pytest.approx(100.0 * 4 / 5)
+    assert fc.branches_pct == pytest.approx(100.0 * 3 / 4), "11 is out; 30 half, 31 whole"
+    assert fc.partial_branches == 1, "line 30; line 31 took both"
+    assert fc.functions_pct == 100.0, "AlxX_Get at 20 is excluded, AlxX_Ctor ran"
+    assert fc.exempt == (
+        "line 11: LCOV_EXCL_BR_LINE: the chain before leaves no other case",
+        "line 12: LCOV_EXCL_START: the default of a switch over the enumeration",
+        "line 14: LCOV_EXCL_STOP: ?",
+        "line 20: LCOV_EXCL_LINE: a stub TV keeps",
+    )
+    assert fc.faults == ("line 14: LCOV_EXCL_STOP without a reason",)
+
+    rows, failures = coverage_gate.evaluate([fc], 100.0, (), ("lines", "branches", "functions"))
+    assert rows[1:] == [f"  exempt {e}" for e in fc.exempt]
+    assert failures == [
+        f"{fc.name}: line 14: LCOV_EXCL_STOP without a reason",
+        f"{fc.name}: lines 80.0% < 100%",
+        f"{fc.name}: branches 75.0% < 100%",
+    ]
+
+    stale = SOURCE.replace("line 1\n", "line 1  // LCOV_EXCL_LINE: reached\n").replace(
+        "\tif (y)", "\tif (y)  // LCOV_EXCL_BR_LINE: both taken"
+    )
+    src.write_text(stale, encoding="ascii")
+    (fc,) = coverage_gate.load(info)
+    assert "line 1: excluded, and the run reached it" not in fc.faults, (
+        "line 1 has no record: nothing reached"
+    )
+    assert "line 31: excluded from branches, and the run took every branch" in fc.faults
+
+    broken = "// LCOV_EXCL_START: a\n// LCOV_EXCL_STOP: b\n// LCOV_EXCL_START: c\n// LCOV_EXCL_BR_STOP: d"
+    excluded, branches, listed, faults = coverage_gate.exclusions(broken)
+    assert (excluded, branches) == ({1, 3, 4}, set())
+    assert faults == [
+        "line 4: LCOV_EXCL_BR_STOP without a start",
+        "line 3: LCOV_EXCL_START without a stop",
+    ]
+    assert len(listed) == 4
+    nested = "// LCOV_EXCL_START: a\n// LCOV_EXCL_START: b\n// LCOV_EXCL_STOP: c"
+    assert coverage_gate.exclusions(nested)[3] == [
+        "line 2: LCOV_EXCL_START inside a section open since line 1"
+    ]
+
+    stray = "TN:\n" + LCOV.replace("SRC", str(src))
+    (unread,) = coverage_gate.from_lcov(stray, lambda _path: None)
+    assert unread.exempt == (), "a source that cannot be read exempts nothing"
+    assert unread.lines_pct == pytest.approx(100.0 * 4 / 8), "and every record counts"
+    (gone,) = coverage_gate.from_lcov(LCOV.replace("SRC", str(tmp_path / "gone.c")))
+    assert gone.exempt == (), "a source that is not there, the same"
+
+    assert coverage_gate.main([str(info), "--metrics", "functions"]) == 1, "the stale marker fails"
+    out = capsys.readouterr().out
+    assert "  exempt line 20: LCOV_EXCL_LINE: a stub TV keeps" in out
