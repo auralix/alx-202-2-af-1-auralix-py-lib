@@ -22,6 +22,16 @@ Proofs (ALX-1564):
        a branch-excluded line whose every branch was taken - fail
   P718 a line that is a closing brace alone is no line: llvm charges the brace after a return or
        a break with the region nothing reaches; a marked brace the run reached is stale all the same
+  P808 the same exemptions live in a TOML file named by --exclusions, the sources free of comments:
+       an entry names its file by trailing path and a regex over the line, scoped to a function and
+       to the nth match when asked; kind lines, branches, block (the braces or the statements to the
+       break or return after the matching line) and function (the body between the definition and
+       the brace at column 0); each is listed under its file as a marker is
+  P809 a stale or malformed exclusion fails: a match the source no longer holds, several matches
+       without nth, nth beyond them, a function the source or the report lacks, an excluded line,
+       block or function the run reached, a branch exclusion whose every branch was taken, entries
+       for a source that cannot be read; an entry without file, kind, match or reason, or of an
+       unknown kind, is refused when the file is read
 """
 
 import json
@@ -449,3 +459,209 @@ def test_ALX1564_P706_an_lcov_tracefile_is_gated_with_its_sources_exclusion_mark
     assert coverage_gate.main([str(info), "--metrics", "functions"]) == 1, "the stale marker fails"
     out = capsys.readouterr().out
     assert "  exempt line 20: LCOV_EXCL_LINE: a stub TV keeps" in out
+
+
+C_LCOV = """SF:SRC
+FN:3,AlxY_Ctor
+FNDA:2,AlxY_Ctor
+FN:19,AlxY_Read
+FNDA:0,AlxY_Read
+DA:3,2
+DA:5,2
+DA:6,2
+DA:7,2
+DA:9,2
+DA:10,2
+DA:11,2
+DA:13,0
+DA:14,0
+DA:16,2
+DA:19,0
+DA:21,0
+DA:22,0
+DA:25,0
+BRDA:5,0,0,2
+BRDA:5,0,1,0
+BRDA:9,0,0,2
+BRDA:9,0,1,0
+BRDA:16,0,0,2
+BRDA:16,0,1,0
+end_of_record
+"""
+C_SOURCE = """\
+#include "alxY.h"
+
+void AlxY_Ctor(AlxY* me, int kind)
+{
+	while (1)
+	{
+		if (kind == 1) break;
+	}
+	switch (kind)
+	{
+		case 1: me->a = 1; break;
+		default:
+			ALX_Y_ASSERT(false);
+			break;
+	}
+	if (me->a && kind) return;
+}
+
+ALX_UNUSED static int AlxY_Read(AlxY* me)
+{
+	return me->a;
+}
+
+static void AlxY_Lone(void)
+	return;
+"""
+
+EXCLUSIONS = """\
+[[exclude]]
+file = "alxY.c"
+kind = "branches"
+match = "while \\\\(1\\\\)"
+reason = "a constant loop condition"
+
+[[exclude]]
+file = "alxY.c"
+function = "AlxY_Ctor"
+kind = "block"
+match = "^\\\\s*default:$"
+reason = "the enumeration"
+
+[[exclude]]
+file = "alxY.c"
+kind = "lines"
+match = "break;"
+nth = 3
+reason = "the break of the default"
+
+[[exclude]]
+file = "alxY.c"
+kind = "function"
+match = "AlxY_Read"
+reason = "an uncalled reader"
+
+[[exclude]]
+file = "other.c"
+kind = "lines"
+match = "anything"
+reason = "another file: not applied here"
+"""
+
+
+def test_ALX1564_P808_the_exclusions_of_a_toml_file_apply_to_an_lcov_tracefile(tmp_path, capsys):
+    src = tmp_path / "alxY.c"
+    src.write_text(C_SOURCE, encoding="ascii")
+    info = tmp_path / "lcov.info"
+    info.write_text(C_LCOV.replace("SRC", str(src)), encoding="ascii")
+    toml = tmp_path / "coverage.toml"
+    toml.write_text(EXCLUSIONS, encoding="ascii")
+
+    (fc,) = coverage_gate.load(info, toml)
+    # the default's block (12 to 14), the break (14) and AlxY_Read (19 to 22) are out; of the
+    # records left (3, 5, 6, 7, 9, 10, 11, 16, 25) only 25 is uncovered
+    assert fc.missing_lines == (25,)
+    assert fc.lines_pct == pytest.approx(100.0 * 8 / 9)
+    assert fc.branches_pct == pytest.approx(50.0), "line 5 is out; 9 and 16 half each"
+    assert fc.functions_pct == 100.0, "AlxY_Read at 19 is excluded, AlxY_Ctor ran"
+    assert fc.exempt == (
+        "branches 'while \\\\(1\\\\)' (line 5): a constant loop condition",
+        "block '^\\\\s*default:$' in AlxY_Ctor (lines 12, 13-14): the enumeration",
+        "lines 'break;' (line 14): the break of the default",
+        "function 'AlxY_Read' (lines 19-22): an uncalled reader",
+    )
+    assert fc.faults == ()
+
+    rows, failures = coverage_gate.evaluate([fc], 100.0, (), ("lines", "branches", "functions"))
+    assert rows[1:] == [f"  exempt {e}" for e in fc.exempt]
+    assert failures == [
+        f"{fc.name}: lines 88.9% < 100%",
+        f"{fc.name}: branches 50.0% < 100%",
+    ]
+    assert coverage_gate.main([str(info), "--metrics", "functions", "--exclusions", str(toml)]) == 0
+    out = capsys.readouterr().out
+    assert "  exempt function 'AlxY_Read' (lines 19-22): an uncalled reader" in out
+    assert coverage_gate.main([str(info), "--metrics", "functions"]) == 1, "without the file"
+
+    # a block with braces: the switch; one without: the label up to its break; a one-line case is
+    # its own block; the function runs to the end when no brace at column 0 closes it; the entries'
+    # file is matched by its trailing path
+    lines = C_SOURCE.split("\n")
+    assert coverage_gate._block_range(lines, 9) == (10, 15)
+    assert coverage_gate._block_range(lines, 12) == (13, 14)
+    assert coverage_gate._block_range(lines, 11) == (11, 11)
+    assert coverage_gate._function_range(lines, "AlxY_Lone") == (24, 26)
+    assert coverage_gate._function_range(lines, "AlxY_Gone") is None
+    assert coverage_gate._block_range(["if (x)", "", "{", "a;", "}"], 1) == (2, 5)
+    assert coverage_gate._block_range(["if (x)", "{", "a;"], 1) == (2, 3), "unclosed: to the end"
+    assert coverage_gate._block_range(["default:", "a;"], 1) == (2, 2), "no break: to the end"
+    entries = coverage_gate.load_exclusions(toml)
+    assert [e["file"] for e in entries] == ["alxY.c"] * 4 + ["other.c"]
+    (same,) = coverage_gate.from_lcov(
+        C_LCOV.replace("SRC", "C:\\repo\\Ext\\alxY.c"), lambda _p: C_SOURCE, entries
+    )
+    assert same.exempt == fc.exempt
+
+
+def test_ALX1564_P809_a_stale_or_malformed_exclusion_fails(tmp_path):
+    src = tmp_path / "alxY.c"
+    src.write_text(C_SOURCE, encoding="ascii")
+    lcov = C_LCOV.replace("SRC", str(src))
+
+    def faults_of(text=lcov, source=C_SOURCE, file="alxY.c", **entry):
+        entry.update(file=file, reason="r")
+        (fc,) = coverage_gate.from_lcov(text, lambda _p: source, [entry])
+        return list(fc.faults)
+
+    assert faults_of(kind="lines", match="no such text") == [
+        "lines 'no such text': matches nothing"
+    ]
+    assert faults_of(kind="block", match="break;") == ["block 'break;': 3 matches, give nth"]
+    assert faults_of(kind="lines", match="break;", nth=4) == ["lines 'break;': nth 4, 3 match(es)"]
+    assert faults_of(kind="lines", match="break;", function="AlxY_Gone") == [
+        "lines 'break;' in AlxY_Gone: no function AlxY_Gone in the source"
+    ]
+    assert faults_of(kind="function", match="AlxY_Lone") == [
+        "function 'AlxY_Lone': no function AlxY_Lone in the source and the report"
+    ], "in the source, not in the report"
+    assert faults_of(kind="function", match="AlxY_Ctor") == [
+        "function 'AlxY_Ctor': excluded, and the run reached it"
+    ]
+    assert faults_of(kind="lines", match="switch") == [
+        "lines 'switch' (line 9): excluded, and the run reached it"
+    ]
+    assert faults_of(kind="lines", match="switch", function="AlxY_Ctor") == [
+        "lines 'switch' in AlxY_Ctor (line 9): excluded, and the run reached it"
+    ], "scoped to the function, the same"
+    half = lcov.replace("BRDA:16,0,1,0", "BRDA:16,0,1,1")
+    assert faults_of(half, kind="branches", match="me->a && kind") == [
+        "branches 'me->a && kind' (line 16): excluded from branches, and the run took every branch"
+    ]
+    assert faults_of(half, kind="block", match="me->a && kind") == [
+        "block 'me->a && kind' (line 16): excluded from branches, and the run took every branch",
+        "block 'me->a && kind' (lines 16-16): excluded, and the run reached it",
+    ], "a one-line block is the line: reached, stale twice"
+    assert faults_of(kind="block", match="^\\s*case 1:") == [
+        "block '^\\\\s*case 1:' (lines 11-11): excluded, and the run reached it"
+    ]
+    assert faults_of(kind="block", match="while") == [
+        "block 'while' (lines 6-8): excluded, and the run reached it"
+    ]
+    assert faults_of(source=None, kind="lines", match="x") == [
+        "exclusions configured, and the source cannot be read"
+    ]
+    assert faults_of(source=None, file="other.c", kind="lines", match="x") == []
+
+    toml = tmp_path / "coverage.toml"
+    toml.write_text('[[exclude]]\nfile = "a.c"\nkind = "lines"\nmatch = "x"\n', encoding="ascii")
+    with pytest.raises(ValueError, match="missing reason"):
+        coverage_gate.load_exclusions(toml)
+    toml.write_text(
+        '[[exclude]]\nfile = "a.c"\nkind = "region"\nmatch = "x"\nreason = "r"\n', encoding="ascii"
+    )
+    with pytest.raises(ValueError, match="unknown kind, from lines, branches, block, function"):
+        coverage_gate.load_exclusions(toml)
+    toml.write_text("", encoding="ascii")
+    assert coverage_gate.load_exclusions(toml) == []
