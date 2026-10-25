@@ -32,14 +32,18 @@ that a repository keeps its sources free of coverage comments (lcov's ``--omit-l
     file = "alxParamItem.c"  # the report's path, exact or by its trailing components
     function = "AlxParamItem_SetVal"  # optional: the lines of this function alone are searched
     kind = "block"  # lines | branches | block | function
-    match = "^.*else$"  # a regex over the line's text; a function's name for kind function
+    line = "else"  # the line's code: its comment and its spacing aside; or match, a regex
     nth = 2  # optional: the nth matching line of the scope, when there are several
     reason = "the thirteen data types above are the enumeration"
 
-``lines`` takes every matching line out of lines, branches and functions; ``branches`` takes it out
+A ``line`` is the code of the line, compared with the trailing ``//`` comment off and every run
+of whitespace as one space; a ``match`` is a regex searched in the line; kind ``function``
+takes the function's name in ``match``. ``lines`` takes every matching line out of lines,
+branches and functions; ``branches`` takes it out
 of branches alone; ``block`` takes the block the matching line opens - the braces after it, or the
 statements up to its ``break`` or ``return`` for a label, the opening line alone when it holds
-one - out of every metric and the opening line out of branches; ``function`` takes a
+one - and the opening line out of every metric, the opening line's branches checked, its
+reaching not (an ``if`` whose body no test enters is reached); ``function`` takes a
 function's body, its definition line (not a prototype) to the closing brace at column 0. Each is
 listed under its file as the markers are, and each fails when stale: a match the source no longer
 holds, a match that is several lines without ``nth``, a function the report does not carry, an
@@ -257,16 +261,34 @@ _ENDS_BLOCK = re.compile(r"\bbreak\s*;|\breturn\b")
 
 
 def load_exclusions(path: str | Path) -> list[dict[str, Any]]:
-    """Read the ``[[exclude]]`` tables of a TOML file; each needs file, kind, match and reason."""
+    """Read the ``[[exclude]]`` tables of a TOML file: file, kind, line or match, reason each."""
     data = tomllib.loads(Path(path).read_text(encoding="utf-8"))
     entries = data.get("exclude", [])
     for entry in entries:
-        missing = [key for key in ("file", "kind", "match", "reason") if not entry.get(key)]
+        missing = [key for key in ("file", "kind", "reason") if not entry.get(key)]
+        if not entry.get("line") and not entry.get("match"):
+            missing.append("line or match")
         if missing:
             raise ValueError(f"exclusion {entry}: missing {', '.join(missing)}")
         if entry["kind"] not in KINDS:
             raise ValueError(f"exclusion {entry}: unknown kind, from {', '.join(KINDS)}")
     return list(entries)
+
+
+_TRAILING_COMMENT = re.compile(r"\s*//.*$")
+
+
+def _code(text: str) -> str:
+    """Return a line's code: the trailing ``//`` comment off, whitespace runs one space."""
+    return " ".join(_TRAILING_COMMENT.sub("", text).split())
+
+
+def _function_key(rec: dict[str, Any], name: str) -> str | None:
+    """Return the record's key for the function: its name, or ``file.c:name`` for a static one."""
+    for key in rec["fn"]:
+        if key == name or key.endswith(":" + name):
+            return str(key)
+    return None
 
 
 def _function_range(lines: list[str], name: str) -> tuple[int, int] | None:
@@ -322,7 +344,8 @@ def configured(
     listed: list[str] = []
     faults: list[str] = []
     for entry in entries:
-        kind, match, reason = entry["kind"], str(entry["match"]), entry["reason"]
+        kind, reason = entry["kind"], entry["reason"]
+        match = str(entry.get("match") or entry.get("line"))
         scope = f" in {entry['function']}" if entry.get("function") else ""
         label = f"{kind} {match!r}{scope}"
         first, last = 1, len(lines)
@@ -334,16 +357,21 @@ def configured(
             first, last = span
         if kind == "function":
             span = _function_range(lines, match)
-            if span is None or match not in rec["fn"]:
+            key = _function_key(rec, match)
+            if span is None or key is None:
                 faults.append(f"{label}: no function {match} in the source and the report")
                 continue
-            if rec["fnda"].get(match, 0) > 0:
+            if rec["fnda"].get(key, 0) > 0:
                 faults.append(f"{label}: excluded, and the run reached it")
             excluded.update(range(span[0], span[1] + 1))
             listed.append(f"{label} (lines {span[0]}-{span[1]}): {reason}")
             continue
-        pattern = re.compile(match)
-        hits = [n for n in range(first, last + 1) if pattern.search(lines[n - 1])]
+        if entry.get("match"):
+            pattern = re.compile(match)
+            hits = [n for n in range(first, last + 1) if pattern.search(lines[n - 1])]
+        else:
+            code = _code(match)
+            hits = [n for n in range(first, last + 1) if _code(lines[n - 1]) == code]
         nth = entry.get("nth")
         if not hits:
             faults.append(f"{label}: matches nothing")
@@ -378,6 +406,7 @@ def configured(
                     )
                 body = range(body_first, body_last + 1)
                 excluded.update(body)
+                excluded.add(n)  # an else, a default, a case: the opener is the block's own line
                 if any(
                     rec["da"].get(k, 0) > 0 and not _BRACE_ONLY.match(lines[k - 1]) for k in body
                 ):
@@ -385,7 +414,7 @@ def configured(
                         f"{label} (lines {body_first}-{body_last}): excluded, "
                         "and the run reached it"
                     )
-                listed.append(f"{label} (lines {n}, {body_first}-{body_last}): {reason}")
+                listed.append(f"{label} (lines {n}-{body_last}): {reason}")
     return excluded, branches, listed, faults
 
 

@@ -23,9 +23,11 @@ Proofs (ALX-1564):
   P718 a line that is a closing brace alone is no line: llvm charges the brace after a return or
        a break with the region nothing reaches; a marked brace the run reached is stale all the same
   P808 the same exemptions live in a TOML file named by --exclusions, the sources free of comments:
-       an entry names its file by trailing path and a regex over the line, scoped to a function and
+       an entry names its file by trailing path and the line by its code (comment and spacing
+       aside) or by a regex, scoped to a function and
        to the nth match when asked; kind lines, branches, block (the braces or the statements to the
-       break or return after the matching line) and function (the body between the definition and
+       break or return after the matching line, the line itself out of every metric) and function
+       (the body between the definition and
        the brace at column 0, a prototype passed over); each is listed under its file as a
        marker is
   P809 a stale or malformed exclusion fails: a match the source no longer holds, several matches
@@ -465,8 +467,8 @@ def test_ALX1564_P706_an_lcov_tracefile_is_gated_with_its_sources_exclusion_mark
 C_LCOV = """SF:SRC
 FN:3,AlxY_Ctor
 FNDA:2,AlxY_Ctor
-FN:19,AlxY_Read
-FNDA:0,AlxY_Read
+FN:19,alxY.c:AlxY_Read
+FNDA:0,alxY.c:AlxY_Read
 DA:3,2
 DA:5,2
 DA:6,2
@@ -528,7 +530,7 @@ reason = "a constant loop condition"
 file = "alxY.c"
 function = "AlxY_Ctor"
 kind = "block"
-match = "^\\\\s*default:$"
+line = "default:  // a comment and the spacing aside"
 reason = "the enumeration"
 
 [[exclude]]
@@ -566,10 +568,11 @@ def test_ALX1564_P808_the_exclusions_of_a_toml_file_apply_to_an_lcov_tracefile(t
     assert fc.missing_lines == (25,)
     assert fc.lines_pct == pytest.approx(100.0 * 8 / 9)
     assert fc.branches_pct == pytest.approx(50.0), "line 5 is out; 9 and 16 half each"
-    assert fc.functions_pct == 100.0, "AlxY_Read at 19 is excluded, AlxY_Ctor ran"
+    assert fc.functions_pct == 100.0, "AlxY_Read at 19 (static: file.c:name) is excluded"
     assert fc.exempt == (
         "branches 'while \\\\(1\\\\)' (line 5): a constant loop condition",
-        "block '^\\\\s*default:$' in AlxY_Ctor (lines 12, 13-14): the enumeration",
+        "block 'default:  // a comment and the spacing aside' in AlxY_Ctor (lines 12-14): "
+        "the enumeration",
         "lines 'break;' (line 14): the break of the default",
         "function 'AlxY_Read' (lines 19-22): an uncalled reader",
     )
@@ -621,6 +624,12 @@ def test_ALX1564_P809_a_stale_or_malformed_exclusion_fails(tmp_path):
     assert faults_of(kind="lines", match="no such text") == [
         "lines 'no such text': matches nothing"
     ]
+    assert faults_of(kind="lines", line="while") == ["lines 'while': matches nothing"], (
+        "a line is the whole code, not a part"
+    )
+    assert faults_of(kind="lines", line="\tif (me->a  &&  kind)   return;  // x") == [
+        "lines '\\tif (me->a  &&  kind)   return;  // x' (line 16): excluded, and the run reached it"
+    ], "a line's spacing and comment aside: the whole-line match"
     assert faults_of(kind="block", match="break;") == ["block 'break;': 3 matches, give nth"]
     assert faults_of(kind="lines", match="break;", nth=4) == ["lines 'break;': nth 4, 3 match(es)"]
     assert faults_of(kind="lines", match="break;", function="AlxY_Gone") == [
@@ -635,6 +644,11 @@ def test_ALX1564_P809_a_stale_or_malformed_exclusion_fails(tmp_path):
     assert faults_of(kind="lines", match="switch") == [
         "lines 'switch' (line 9): excluded, and the run reached it"
     ]
+    evaluated = C_SOURCE.replace("\t\tdefault:", "\t\tif (kind == 2)")
+    reached = lcov.replace("DA:11,2\n", "DA:11,2\nDA:12,2\n")
+    assert faults_of(reached, evaluated, kind="block", match="kind == 2") == [], (
+        "the opener reached, its body not: the exclusion holds"
+    )
     assert faults_of(kind="lines", match="switch", function="AlxY_Ctor") == [
         "lines 'switch' in AlxY_Ctor (line 9): excluded, and the run reached it"
     ], "scoped to the function, the same"
@@ -660,6 +674,9 @@ def test_ALX1564_P809_a_stale_or_malformed_exclusion_fails(tmp_path):
     toml = tmp_path / "coverage.toml"
     toml.write_text('[[exclude]]\nfile = "a.c"\nkind = "lines"\nmatch = "x"\n', encoding="ascii")
     with pytest.raises(ValueError, match="missing reason"):
+        coverage_gate.load_exclusions(toml)
+    toml.write_text('[[exclude]]\nfile = "a.c"\nkind = "lines"\nreason = "r"\n', encoding="ascii")
+    with pytest.raises(ValueError, match="missing line or match"):
         coverage_gate.load_exclusions(toml)
     toml.write_text(
         '[[exclude]]\nfile = "a.c"\nkind = "region"\nmatch = "x"\nreason = "r"\n', encoding="ascii"
