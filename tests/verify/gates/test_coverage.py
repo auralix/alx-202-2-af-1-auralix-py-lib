@@ -26,7 +26,8 @@ Proofs (ALX-1564):
        an entry names its file by trailing path and a regex over the line, scoped to a function and
        to the nth match when asked; kind lines, branches, block (the braces or the statements to the
        break or return after the matching line) and function (the body between the definition and
-       the brace at column 0); each is listed under its file as a marker is
+       the brace at column 0, a prototype passed over); each is listed under its file as a
+       marker is
   P809 a stale or malformed exclusion fails: a match the source no longer holds, several matches
        without nth, nth beyond them, a function the source or the report lacks, an excluded line,
        block or function the run reached, a branch exclusion whose every branch was taken, entries
@@ -594,6 +595,8 @@ def test_ALX1564_P808_the_exclusions_of_a_toml_file_apply_to_an_lcov_tracefile(t
     assert coverage_gate._block_range(lines, 11) == (11, 11)
     assert coverage_gate._function_range(lines, "AlxY_Lone") == (24, 26)
     assert coverage_gate._function_range(lines, "AlxY_Gone") is None
+    proto = ["static int f(void);", "", "static int f(void)", "{", "}"]
+    assert coverage_gate._function_range(proto, "f") == (3, 5), "a prototype is no definition"
     assert coverage_gate._block_range(["if (x)", "", "{", "a;", "}"], 1) == (2, 5)
     assert coverage_gate._block_range(["if (x)", "{", "a;"], 1) == (2, 3), "unclosed: to the end"
     assert coverage_gate._block_range(["default:", "a;"], 1) == (2, 2), "no break: to the end"

@@ -39,11 +39,11 @@ that a repository keeps its sources free of coverage comments (lcov's ``--omit-l
 ``lines`` takes every matching line out of lines, branches and functions; ``branches`` takes it out
 of branches alone; ``block`` takes the block the matching line opens - the braces after it, or the
 statements up to its ``break`` or ``return`` for a label, the opening line alone when it holds
-one - out of every metric and the opening line out of branches; ``function`` takes a function's
-body, its definition line to the closing brace at column 0. Each is listed under its file as the
-markers are, and each fails when stale: a match the source no longer holds, a match that is
-several lines without ``nth``, a function the report does not carry, an excluded line or function
-the run reached, a branch exclusion whose every branch was taken.
+one - out of every metric and the opening line out of branches; ``function`` takes a
+function's body, its definition line (not a prototype) to the closing brace at column 0. Each is
+listed under its file as the markers are, and each fails when stale: a match the source no longer
+holds, a match that is several lines without ``nth``, a function the report does not carry, an
+excluded line or function the run reached, a branch exclusion whose every branch was taken.
 
 A line that is a closing brace alone (``}``, with or without a comment) is no line: llvm-cov
 charges the brace that closes a block after a ``return`` or a ``break`` with the region nothing
@@ -270,10 +270,13 @@ def load_exclusions(path: str | Path) -> list[dict[str, Any]]:
 
 
 def _function_range(lines: list[str], name: str) -> tuple[int, int] | None:
-    """Return the function's (first, last) lines, 1-based: definition to the ``}`` at column 0."""
+    """Return the function's (first, last) lines, 1-based: definition to the ``}`` at column 0.
+
+    A prototype - the line ends with a semicolon - is not the definition.
+    """
     for index, text in enumerate(lines):
         m = _FUNCTION_DEF.match(text)
-        if m is None or m.group("name") != name:
+        if m is None or m.group("name") != name or text.rstrip().endswith(";"):
             continue
         for end in range(index + 1, len(lines)):
             if lines[end] == "}":
