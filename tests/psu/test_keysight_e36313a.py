@@ -41,6 +41,8 @@ class FakeSocket:
         self.close_count = 0
         self.ignore_sets = set()
         self.send_error = None
+        self.ovp = {1: 6.6, 2: 27.5, 3: 27.5}
+        self.ocp = {1: False, 2: False, 3: False}
 
     def settimeout(self, timeout):
         self.timeouts.append(timeout)
@@ -62,6 +64,18 @@ class FakeSocket:
             return
         if cmd in self.modes:
             self.pending.append(self.modes[cmd].encode("ascii") + b"\n")
+            return
+        protection = re.fullmatch(r"(VOLT:PROT|CURR:PROT:STAT)\?\s*\(@([123])\)", cmd)
+        if protection:
+            name, channel = protection.groups()
+            value = self.ovp[int(channel)] if name == "VOLT:PROT" else int(self.ocp[int(channel)])
+            self.pending.append(f"{value}\n".encode("ascii"))
+            return
+        protection_set = re.fullmatch(r"CURR:PROT:STAT ([01]),\s*\(@([123])\)", cmd)
+        if protection_set:
+            value, channel = protection_set.groups()
+            if "OCP" not in self.ignore_sets:
+                self.ocp[int(channel)] = bool(int(value))
             return
         query = re.fullmatch(r"(VOLT|CURR|OUTP|MEAS:VOLT|MEAS:CURR)\?\s*\(@([123])\)", cmd)
         if query:
@@ -127,6 +141,39 @@ def commands(fake):
 
 def mutations(fake):
     return [cmd for cmd in commands(fake) if "?" not in cmd]
+
+
+@pytest.mark.parametrize("channel", [1, 2, 3])
+def test_ALX1753_P41_protection_commands_select_only_requested_channel(bench, channel):
+    psu, fake = bench()
+    assert psu.overvoltage_limit(channel) == fake.ovp[channel]
+    assert not psu.overcurrent_enabled(channel)
+    psu.set_overcurrent_enabled(True, channel)
+    assert fake.ocp == {c: c == channel for c in (1, 2, 3)}
+    assert mutations(fake) == [f"CURR:PROT:STAT 1, (@{channel})"]
+    psu.set_overcurrent_enabled(False, channel)
+    assert not any(fake.ocp.values())
+
+
+@pytest.mark.parametrize("value", [0, 1, "ON", None])
+def test_ALX1753_P42_protection_requires_boolean_before_mutation(bench, value):
+    psu, fake = bench()
+    with pytest.raises(InstrumentError):
+        psu.set_overcurrent_enabled(value, 2)
+    assert mutations(fake) == []
+
+
+def test_ALX1753_P43_protection_readback_mismatch_fails(bench):
+    psu, fake = bench()
+    fake.ignore_sets.add("OCP")
+    with pytest.raises(InstrumentError, match="not confirmed"):
+        psu.set_overcurrent_enabled(True, 2)
+
+
+def test_ALX1753_P44_invalid_protection_state_is_not_false(bench):
+    psu, _ = bench(FakeSocket(scripted={"CURR:PROT:STAT? (@2)": [b"bad\n"]}))
+    with pytest.raises(InstrumentError, match="invalid OCP"):
+        psu.overcurrent_enabled(2)
 
 
 def test_ALX1753_P1_constructor_identifies_without_changing_instrument(bench):

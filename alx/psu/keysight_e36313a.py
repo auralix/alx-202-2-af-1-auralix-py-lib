@@ -274,6 +274,27 @@ class KeysightE36313A:
             raise InstrumentError(f"{self.host}: invalid output state {answer!r}")
         return answer == "1"
 
+    def overvoltage_limit(self, channel: int = 1) -> float:
+        """Read the OVP threshold without changing it."""
+        return self._query_float(f"VOLT:PROT? {self._channel(channel)}")
+
+    def overcurrent_enabled(self, channel: int = 1) -> bool:
+        """Read whether sustained constant-current operation trips the output off."""
+        answer = self._query(f"CURR:PROT:STAT? {self._channel(channel)}")
+        if answer not in ("0", "1"):
+            raise InstrumentError(f"{self.host}: invalid OCP state {answer!r}")
+        return answer == "1"
+
+    def set_overcurrent_enabled(self, enabled: bool, channel: int = 1) -> None:
+        """Enable or disable OCP and verify its state, preserving the configured delay."""
+        if type(enabled) is not bool:
+            raise InstrumentError("enabled must be a boolean")
+        self._channel(channel)
+        self._independent()
+        self._write(f"CURR:PROT:STAT {int(enabled)}, {self._channel(channel)}")
+        if self.overcurrent_enabled(channel) != enabled:
+            raise InstrumentError(f"{self.host}: channel {channel} OCP command not confirmed")
+
     def _set_output(self, on: bool, channel: int) -> None:
         self._write(f"OUTP {int(on)}, {self._channel(channel)}")
         if self.output_is_on(channel) != on:
