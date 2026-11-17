@@ -22,7 +22,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+saleae = ["logic2-automation>=1.0.11,<2", "psutil>=6,<8"]
+
 test = [                                     # TEST - HOST lane (and every lane that re-runs the suite)
+    "alx-202-2-af-1-auralix-py-lib[saleae]",
     "pytest>=8",
     "pytest-html>=4",
     "pytest-timeout>=2",
@@ -107,6 +110,10 @@ files = ["alx", "tests", "noxfile.py"]
 strict = true
 warn_unreachable = true
 enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
+
+[[tool.mypy.overrides]]
+module = "saleae.*"
+ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = "tests.*"
