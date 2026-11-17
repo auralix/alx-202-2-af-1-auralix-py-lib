@@ -67,6 +67,7 @@ def build(session: nox.Session) -> None:
         "-I",  # isolated: only the installed wheel is importable, never ./alx at the cwd
         "-c",
         "import alx, alx.debug_probe, alx.debug_probe.jlink, alx.psu.owon_p4603, alx.c_lib.cli, "
+        "alx.psu.keysight_e36313a, "
         "alx.c_lib.trace, alx.fw.live_watch, alx.serial_logger, alx.verify, alx.verify.evidence, "
         "alx.verify.lanes, alx.verify.gates.ascii, alx.verify.gates.c_style, "
         "alx.verify.gates.fake_style, "
