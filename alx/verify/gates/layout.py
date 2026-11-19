@@ -15,16 +15,17 @@ root of a Python repository, ``Test/`` of a C one - and this module states it as
   replaces a vendor header keeps the vendor's name, because the product's includes must find it.
   The fakes of a whole vendor tree sit in one folder of it, ``shim/<vendor>/``, a lowercase word,
   as headers under the include paths the code names (``shim/zephyr/zephyr/drivers/gpio.h``).
-- ``harness/``: ``__init__.py`` and the packages ``host/`` and ``target/``, nothing else; a module
-  is ``<snake_case>.py`` and never ``test_*``, which is a test module's name.
+- ``harness/``: ``__init__.py`` and the packages ``host/``, ``target/`` and ``prod/``, nothing else;
+  a module is ``<snake_case>.py`` and never ``test_*``, which is a test module's name.
 - ``TESTS_DIRS``: the first level of ``tests/`` - the execution location in a C repository; in a
   Python repository one folder per sub-package of the import package it mirrors. Both may add
   ``framework/`` for the checks of the verification system itself and ``integration/``.
 - Every Python file in ``tests/`` is ``test_<snake_case>.py``, ``__init__.py`` or
   ``conftest.py``, and every folder holding Python is a package. A framework test mirrors what it
-  checks: a harness module, ``conftest``, ``noxfile``, a host role folder, or ``architecture`` for
-  the rules that span files. Test data is in ``data/`` at the root, at any depth inside it, and
-  nowhere in ``tests/``; every data file identifies itself (``alx.verify.gates.data_source``).
+  checks: a harness module (optionally prefixed by its package, as ``prod_station``), ``conftest``,
+  ``noxfile``, a host role folder, or ``architecture`` for the rules that span files.
+  Test data is in ``data/`` at the root, at any depth inside it, and nowhere in ``tests/``;
+  every data file identifies itself (``alx.verify.gates.data_source``).
 
 Only what Git tracks is checked: build outputs, caches and virtual environments are not the
 repository's, so they are never a finding. Usage::
@@ -61,7 +62,7 @@ ROLE_SHAPES = {
     "checks": "<prefix><Subject>Check.c",
     "shim": "<prefix>HostShim.c or .h, or the vendor header it replaces",
 }
-HARNESS_PACKAGES = frozenset({"host", "target"})
+HARNESS_PACKAGES = frozenset({"host", "target", "prod"})
 FRAMEWORK_FIXED = frozenset({"conftest", "noxfile", "architecture"})
 TESTS_DIRS = {"c": frozenset({"host", "target"}), "python": frozenset()}
 TESTS_COMMON = frozenset({"framework", "integration"})
@@ -113,6 +114,15 @@ def check_paths(paths: Iterable[str], kind: str, packages: Iterable[str] = ()) -
             for f in files
             if f.parts[0] == "harness" and len(f.parts) == 3 and f.suffix == ".py"
         }
+        | {
+            f"{f.parts[1]}_{f.stem}"
+            for f in files
+            if f.parts[0] == "harness"
+            and len(f.parts) == 3
+            and f.parts[1] in HARNESS_PACKAGES
+            and f.suffix == ".py"
+            and f.name != "__init__.py"
+        }
     )
     test_dirs: set[PurePosixPath] = set()
     for f in files:
@@ -163,7 +173,7 @@ def _vendor_fake(f: PurePosixPath) -> list[str]:
 
 
 def _harness_file(f: PurePosixPath) -> list[str]:
-    """Return the findings for one file under ``harness/``: the two packages, snake_case modules."""
+    """Return findings for ``harness/``: the supported role packages and snake_case modules."""
     shape = f"harness/ holds __init__.py and the packages {', '.join(sorted(HARNESS_PACKAGES))}/"
     if len(f.parts) == 2:
         return [] if f.name == "__init__.py" else [f"{f}: {shape}"]

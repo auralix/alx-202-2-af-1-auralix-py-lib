@@ -1,6 +1,7 @@
 import csv
 import os
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -74,6 +75,7 @@ def test_report_preserves_metadata_blank_fields_and_success(tmp_path):
     assert row["unperformed"] == ""
     assert row["bom_ident"] == ""
     assert {path.name for path in tmp_path.iterdir()} == {
+        ".test_report.lock",
         "test_report.csv",
         "2611190920_00123-AB_9.log",
     }
@@ -308,7 +310,7 @@ def test_repeated_serial_waits_for_a_real_new_minute_without_overwriting(tmp_pat
     assert (tmp_path / "2611190921_00123-AB_9.log").is_file()
     assert [row["utc_timestamp"] for row in _rows(tmp_path)] == ["2611190920", "2611190921"]
     assert [row["serial_number"] for row in _rows(tmp_path)] == ["00123-AB_9", "00123-AB_9"]
-    assert len(list(tmp_path.iterdir())) == 3
+    assert len(list(tmp_path.iterdir())) == 4
 
 
 def test_different_serials_append_rows_in_the_same_minute(tmp_path):
@@ -452,3 +454,187 @@ def test_a_second_runner_cannot_enter_the_same_output_directory(tmp_path):
     with _report(tmp_path, serial_number="A-03"):
         pass
     assert [row["serial_number"] for row in _rows(tmp_path)] == ["A-01", "A-03"]
+
+
+def _upgraded_report(output_dir, previous_columns=COLUMNS):
+    return report.Report(
+        output_dir,
+        "A-03",
+        (*COLUMNS, "new_measurement"),
+        {"prod_test_version": "0.2.0+new-source-hash"},
+        previous_columns=previous_columns,
+        output_fn=lambda _: None,
+        clock_fn=lambda: NOW,
+    )
+
+
+def test_explicit_schema_upgrade_preserves_records_versions_logs_and_original_bytes(tmp_path):
+    for serial_number in ("A-01", "A-02"):
+        with _report(
+            tmp_path,
+            serial_number=serial_number,
+            metadata={"prod_test_version": "0.1.0+old-source-hash", "pcb_name": 'Example, "A"'},
+        ) as result:
+            result.measurement("voltage_v", 3.3, low=3.0, high=3.6)
+            result.finish("PASS", 'Multiline \u00e9vidence\nwith "quotes", commas')
+    csv_path = tmp_path / "test_report.csv"
+    original = csv_path.read_bytes()
+    old_rows = _rows(tmp_path)
+    old_logs = {path: path.read_bytes() for path in tmp_path.glob("*.log")}
+    with _upgraded_report(tmp_path) as result:
+        assert (tmp_path / "test_report.csv.bak").read_bytes() == original
+        result.measurement("new_measurement", 7.0, low=6.0, high=8.0)
+    updated_rows = _rows(tmp_path)
+    for old, updated in zip(old_rows, updated_rows[:2], strict=True):
+        assert {field: updated[field] for field in COLUMNS} == old
+        assert updated["new_measurement"] == ""
+    assert updated_rows[2]["prod_test_version"] == "0.2.0+new-source-hash"
+    assert updated_rows[2]["new_measurement"] == "7.0"
+    assert updated_rows[2]["result"] == "PASS"
+    assert {path: path.read_bytes() for path in old_logs} == old_logs
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_schema_upgrade_is_opt_in_and_unknown_old_header_never_gets_rewritten(tmp_path):
+    with _report(tmp_path, serial_number="A-01"):
+        pass
+    original = (tmp_path / "test_report.csv").read_bytes()
+    with (
+        pytest.raises(ValueError, match="header"),
+        _upgraded_report(tmp_path, previous_columns=None),
+    ):
+        pytest.fail("Unexpected schema was accepted")
+    assert (tmp_path / "test_report.csv").read_bytes() == original
+    assert not (tmp_path / "test_report.csv.bak").exists()
+    assert len(list(tmp_path.glob("*.log"))) == 1
+
+
+@pytest.mark.parametrize(
+    "previous_columns",
+    [
+        (),
+        (*COLUMNS, "voltage_v"),
+        (*COLUMNS, "new_measurement"),
+        (*COLUMNS, "removed_measurement"),
+        COLUMNS[1:],
+    ],
+)
+def test_schema_upgrade_rejects_ambiguous_deleted_or_renamed_columns_before_output(
+    tmp_path, previous_columns
+):
+    with pytest.raises(ValueError, match="Previous columns"):
+        _upgraded_report(tmp_path, previous_columns=previous_columns)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_upgrade_rejects_incomplete_old_rows_before_backup_or_log(tmp_path):
+    path = tmp_path / "test_report.csv"
+    with path.open("w", encoding="utf-8", newline="") as stream:
+        csv.writer(stream).writerow(COLUMNS)
+        csv.writer(stream).writerow(["2611190900", "A-01"])
+    original = path.read_bytes()
+    with pytest.raises(ValueError, match="incomplete"), _upgraded_report(tmp_path):
+        pytest.fail("Incomplete record was migrated")
+    assert path.read_bytes() == original
+    assert not (tmp_path / "test_report.csv.bak").exists()
+    assert not list(tmp_path.glob("*.log"))
+
+
+def test_upgrade_rejects_malformed_csv_without_touching_original(tmp_path):
+    path = tmp_path / "test_report.csv"
+    with path.open("w", encoding="utf-8", newline="") as stream:
+        csv.writer(stream).writerow(COLUMNS)
+        stream.write('"unterminated')
+    original = path.read_bytes()
+    with pytest.raises(csv.Error), _upgraded_report(tmp_path):
+        pytest.fail("Malformed record was migrated")
+    assert path.read_bytes() == original
+    assert not (tmp_path / "test_report.csv.bak").exists()
+
+
+@pytest.mark.parametrize("matches", [False, True])
+def test_upgrade_never_overwrites_an_existing_backup(tmp_path, matches):
+    with _report(tmp_path, serial_number="A-01"):
+        pass
+    path = tmp_path / "test_report.csv"
+    original = path.read_bytes()
+    backup = tmp_path / "test_report.csv.bak"
+    previous_backup = original if matches else b"Older untouched archive\n"
+    backup.write_bytes(previous_backup)
+    if matches:
+        with _upgraded_report(tmp_path):
+            pass
+        assert _rows(tmp_path)[1]["result"] == "PASS"
+    else:
+        with pytest.raises(ValueError, match="backup differs"), _upgraded_report(tmp_path):
+            pytest.fail("Conflicting archive was ignored")
+        assert path.read_bytes() == original
+        assert len(list(tmp_path.glob("*.log"))) == 1
+    assert backup.read_bytes() == previous_backup
+
+
+def test_failed_atomic_replace_keeps_original_backup_and_releases_lock(tmp_path, monkeypatch):
+    with _report(tmp_path, serial_number="A-01"):
+        pass
+    path = tmp_path / "test_report.csv"
+    original = path.read_bytes()
+
+    def fail_replace(self, target):
+        assert target == path
+        assert path.read_bytes() == original
+        raise OSError("Replace failed")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "replace", fail_replace)
+        with pytest.raises(OSError, match="Replace failed"), _upgraded_report(tmp_path):
+            pytest.fail("Failed replacement entered attempt")
+    assert path.read_bytes() == original
+    assert (tmp_path / "test_report.csv.bak").read_bytes() == original
+    assert not list(tmp_path.glob("*.tmp"))
+    assert len(list(tmp_path.glob("*.log"))) == 1
+    with _upgraded_report(tmp_path):
+        pass
+    assert [row["serial_number"] for row in _rows(tmp_path)] == ["A-01", "A-03"]
+
+
+def test_upgrade_cannot_run_while_an_attempt_holds_writer_lock(tmp_path):
+    with _report(tmp_path, serial_number="A-01"):
+        with pytest.raises((OSError, RuntimeError)), _upgraded_report(tmp_path):
+            pytest.fail("Upgrade ran concurrently with production")
+        assert not (tmp_path / "test_report.csv.bak").exists()
+    with _upgraded_report(tmp_path):
+        pass
+
+
+def test_upgrade_detects_old_runner_holding_csv_lock(tmp_path):
+    with _report(tmp_path, serial_number="A-01"):
+        pass
+    path = tmp_path / "test_report.csv"
+    original = path.read_bytes()
+    with path.open("a+", encoding="utf-8", newline="") as old_writer:
+        report._lock(old_writer)
+        with pytest.raises((OSError, RuntimeError)), _upgraded_report(tmp_path):
+            pytest.fail("Old writer lock was ignored")
+    assert path.read_bytes() == original
+    assert not (tmp_path / "test_report.csv.bak").exists()
+
+
+def test_current_schema_appends_without_remigrating_or_overwriting_backup(tmp_path):
+    with _report(tmp_path, serial_number="A-01"):
+        pass
+    with _upgraded_report(tmp_path):
+        pass
+    backup = (tmp_path / "test_report.csv.bak").read_bytes()
+    before = (tmp_path / "test_report.csv").read_bytes()
+    with report.Report(
+        tmp_path,
+        "A-04",
+        (*COLUMNS, "new_measurement"),
+        {},
+        previous_columns=COLUMNS,
+        output_fn=lambda _: None,
+        clock_fn=lambda: NOW,
+    ):
+        pass
+    assert (tmp_path / "test_report.csv").read_bytes().startswith(before)
+    assert (tmp_path / "test_report.csv.bak").read_bytes() == backup

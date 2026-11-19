@@ -22,7 +22,7 @@ Proofs (ALX-1564):
   P353 a role folder holds one shape of file, directly: <prefix><Module>Fake.c,
        <prefix><Module>TestHelpers.c or ..._TestHelpers_<Part>.c, <prefix><Subject>Check.c,
        <prefix>HostShim.c/.h or a vendor header under its own name
-  P354 harness/ holds __init__.py and the packages host/ and target/, whose modules are
+  P354 harness/ holds __init__.py and the packages host/, target/ and prod/, whose modules are
        <snake_case>.py and never test_*
   P355 a framework test mirrors what it checks: a harness module (continuations allowed), conftest,
        noxfile, a host role or architecture
@@ -191,7 +191,7 @@ def test_ALX1564_P353_a_role_folder_holds_one_shape_of_file_directly():
     ], "the shim pair and a vendor header under its own name pass"
 
 
-def test_ALX1564_P354_harness_holds_two_packages_of_snake_case_modules():
+def test_ALX1564_P354_harness_holds_role_packages_of_snake_case_modules():
     paths = [
         *C_ROOT,
         "harness/build.py",
@@ -202,7 +202,7 @@ def test_ALX1564_P354_harness_holds_two_packages_of_snake_case_modules():
         "harness/target/__init__.py",
         "harness/target/flash.py",
     ]
-    shape = "harness/ holds __init__.py and the packages host, target/"
+    shape = "harness/ holds __init__.py and the packages host, prod, target/"
     module = "a harness module is <snake_case>.py, never test_*"
     assert layout.check_paths(paths, "c") == [
         f"harness/build.py: {shape}",
@@ -211,6 +211,65 @@ def test_ALX1564_P354_harness_holds_two_packages_of_snake_case_modules():
         f"harness/host/test_build.py: {module}",
         f"harness/host/Build.py: {module}",
     ], "harness/target/flash.py passes; a module directly in harness/ does not"
+
+
+def test_production_harness_and_exact_package_qualified_framework_mirrors_pass():
+    paths = [
+        *C_ROOT,
+        "harness/prod/__init__.py",
+        "harness/prod/station.py",
+        "harness/prod/run.py",
+        "harness/prod/metrics.py",
+        "harness/target/__init__.py",
+        "harness/target/run.py",
+        "tests/framework/test_prod_station.py",
+        "tests/framework/test_prod_run.py",
+        "tests/framework/test_prod_metrics.py",
+        "tests/framework/test_prod_metrics_pulses.py",
+        "tests/framework/test_target_run.py",
+        "tests/framework/test_host_build.py",
+        "tests/framework/test_station.py",
+    ]
+    assert layout.check_paths(paths, "c") == []
+
+
+def test_production_role_does_not_allow_arbitrary_nested_or_test_harness_files():
+    paths = [
+        *C_ROOT,
+        "harness/prod/__init__.py",
+        "harness/prod/station.py",
+        "harness/prod/nested/check.py",
+        "harness/prod/test_station.py",
+        "harness/prod/Station.py",
+    ]
+    shape = "harness/ holds __init__.py and the packages host, prod, target/"
+    module = "a harness module is <snake_case>.py, never test_*"
+    assert layout.check_paths(paths, "c") == [
+        f"harness/prod/nested/check.py: {shape}",
+        f"harness/prod/test_station.py: {module}",
+        f"harness/prod/Station.py: {module}",
+    ]
+
+
+def test_package_qualified_framework_mirror_requires_the_real_harness_module():
+    paths = [
+        *C_ROOT,
+        "harness/prod/__init__.py",
+        "harness/prod/station.py",
+        "tests/framework/test_prod_missing.py",
+        "tests/framework/test_target_station.py",
+        "tests/framework/test_prod_stationary.py",
+        "tests/framework/test_prod_init.py",
+    ]
+    mirror = (
+        "a framework test mirrors a harness module, conftest, noxfile, a host role or architecture"
+    )
+    assert layout.check_paths(paths, "c") == [
+        f"tests/framework/test_prod_missing.py: {mirror}",
+        f"tests/framework/test_target_station.py: {mirror}",
+        f"tests/framework/test_prod_stationary.py: {mirror}",
+        f"tests/framework/test_prod_init.py: {mirror}",
+    ]
 
 
 def test_ALX1564_P355_a_framework_test_mirrors_what_it_checks():

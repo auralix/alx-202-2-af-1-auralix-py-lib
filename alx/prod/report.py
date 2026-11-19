@@ -7,6 +7,7 @@ import io
 import math
 import os
 import sys
+import tempfile
 import time
 from contextlib import ExitStack
 from datetime import UTC, datetime
@@ -106,6 +107,7 @@ class Report:
         input_fn: Callable[[str], str] = input,
         output_fn: Callable[[str], object] = print,
         *,
+        previous_columns: Sequence[str] | None = None,
         clock_fn: Callable[[], datetime] = _utc_now,
         sleep_fn: Callable[[float], object] = time.sleep,
     ) -> None:
@@ -126,6 +128,15 @@ class Report:
             or any(not column or _formula(column) for column in self.columns)
         ):
             raise ValueError("Columns must be unique and include all common columns")
+        self.previous_columns = tuple(previous_columns) if previous_columns is not None else None
+        if self.previous_columns is not None and (
+            len(set(self.previous_columns)) != len(self.previous_columns)
+            or not set(COMMON_COLUMNS).issubset(self.previous_columns)
+            or not set(self.previous_columns) < set(self.columns)
+        ):
+            raise ValueError(
+                "Previous columns must be unique and a strict subset of report columns"
+            )
         for field, value in metadata.items():
             if field not in self.columns:
                 raise ValueError(f"Unknown metadata field: {field}")
@@ -159,8 +170,16 @@ class Report:
         self._entered = True
         self.output_dir.mkdir(parents=True, exist_ok=True)
         with ExitStack() as opening:
+            lock_path = self.output_dir / ".test_report.lock"
+            writer_lock = opening.enter_context(lock_path.open("a+", encoding="utf-8"))
+            _lock(writer_lock)
             stream = opening.enter_context(self.csv_path.open("a+", encoding="utf-8", newline=""))
             _lock(stream)
+            if self._upgrade_csv(stream):
+                stream = opening.enter_context(
+                    self.csv_path.open("a+", encoding="utf-8", newline="")
+                )
+                _lock(stream)
             self._csv = stream
             timestamps, _ = self._read_csv()
             while True:
@@ -186,6 +205,59 @@ class Report:
             self.log(f"Start {timestamp} UTC; serial_number={self._serial_number}")
             self._stack = opening.pop_all()
         return self
+
+    def _upgrade_csv(self, stream: TextIO) -> bool:
+        stream.seek(0)
+        content = stream.read()
+        if not content:
+            return False
+        reader = csv.reader(io.StringIO(content, newline=""), strict=True)
+        header = next(reader, None)
+        if header == list(self.columns):
+            return False
+        if self.previous_columns is None or header != list(self.previous_columns):
+            raise ValueError("Existing CSV header does not match the report columns")
+        old_rows = list(reader)
+        if any(len(row) != len(self.previous_columns) for row in old_rows):
+            raise ValueError("Existing CSV contains an incomplete result row")
+        previous = content.encode("utf-8")
+        backup = self.csv_path.with_suffix(".csv.bak")
+        try:
+            with backup.open("xb") as copy:
+                copy.write(previous)
+                copy.flush()
+                os.fsync(copy.fileno())
+        except FileExistsError:
+            if backup.read_bytes() != previous:
+                raise ValueError(
+                    "Existing CSV backup differs; preserve it before upgrading"
+                ) from None
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                newline="",
+                prefix=".test_report.",
+                suffix=".tmp",
+                dir=self.output_dir,
+                delete=False,
+            ) as updated:
+                temporary = Path(updated.name)
+                writer = csv.writer(updated, quoting=csv.QUOTE_ALL)
+                writer.writerow(self.columns)
+                for row in old_rows:
+                    values = dict(zip(self.previous_columns, row, strict=True))
+                    writer.writerow([values.get(field, "") for field in self.columns])
+                updated.flush()
+                os.fsync(updated.fileno())
+            stream.close()
+            temporary.replace(self.csv_path)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+        self._output("Report columns expanded; previous records preserved in test_report.csv.bak")
+        return True
 
     def __exit__(
         self,

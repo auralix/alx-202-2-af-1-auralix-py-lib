@@ -36,6 +36,18 @@ def test_config_rejects_nonobject_documents(tmp_path, document):
         '{"limit":',
         '{"limit": 1,}',
         '{"limit": 1} {"limit": 2}',
+    ],
+)
+def test_config_rejects_malformed_json(tmp_path, document):
+    config_path = tmp_path / "settings.json"
+    config_path.write_text(document, encoding="utf-8")
+    with pytest.raises(json.JSONDecodeError):
+        load_config(config_path)
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
         '{"limit": NaN}',
         '{"limit": Infinity}',
         '{"limit": -Infinity}',
@@ -48,7 +60,7 @@ def test_config_rejects_invalid_or_ambiguous_json(tmp_path, document):
     config_path.write_text(document, encoding="utf-8")
     with pytest.raises(
         ValueError,
-        match=r"Expecting|Extra data|[Dd]uplicate|[Nn]on.?finite|[Ii]nvalid|NaN|Infinity",
+        match=r"Duplicate configuration key|Invalid JSON constant",
     ):
         load_config(config_path)
 
